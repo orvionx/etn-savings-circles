@@ -1,5 +1,7 @@
 # ETN Savings Circles
 
+[![CI](https://github.com/orvionx/etn-savings-circles/actions/workflows/ci.yml/badge.svg)](https://github.com/orvionx/etn-savings-circles/actions/workflows/ci.yml)
+
 Rotating savings groups (ROSCAs) on Electroneum Smart Chain, paid in native ETN.
 
 ## The idea
@@ -19,18 +21,49 @@ Electroneum's users are mainly mobile-first users in emerging markets, which is 
 3. **Contribute.** Each round, every member pays the contribution before the deadline.
 4. **Settle.** Once everyone has paid or the deadline passes, anyone can settle the round. The full pot is credited to that round's recipient.
 5. **Missed payments.** A member's first missed payment is covered from their deposit, so the recipient still gets the full pot. If a member whose deposit is already used misses again, the circle dissolves: this round's contributions and every unused deposit are refunded.
-6. **Finish.** After the last round, unused deposits are returned. Members collect their funds with `withdraw()`.
+6. **Finish.** After the last round, unused deposits are returned and every member receives a **soulbound badge NFT**. Members collect their funds with `withdraw()`.
 
 There is no admin key and no fee, and the contract can't be upgraded. Funds can only go to members, under the rules above. The contract also keeps network-wide totals (ETN paid out, rounds settled, circles completed) and a list of each user's circles, so apps can show them without an indexer.
+
+## Savings reputation
+
+Every address builds an on-chain savings history that no one can edit, including the developers:
+
+| Recorded | When |
+|---|---|
+| Circles joined | On joining (undone if the member leaves before the start) |
+| Circles completed | When the last round settles |
+| On-time payments | On every contribution before the deadline |
+| Missed payments | When a deposit covers a missed contribution |
+| Defaults | When a member's repeat miss dissolves a circle |
+
+- **Track-record circles.** Open circles can require a minimum number of completed circles and no defaults (`createOpenCircle(..., minCompleted)`). This lets proven savers form safer, larger circles, and gives newcomers a path: complete a small circle first.
+- **Badges.** `SavingsBadges` is an ERC-721 that cannot be transferred, minted only by the circles contract. Each badge's JSON metadata and SVG artwork are generated on-chain from the circle's data, so they show up in wallets and on the explorer with nothing hosted off-chain.
+- **Savings score** (computed in the app from the on-chain record, so the formula is transparent): `300 + 150 × completed + 4 × on-time − 40 × missed − 300 × defaults`, clamped to 0–1000. Tiers: Bronze, Silver (650+), Gold (850+), and "At risk" for anyone with a default.
+
+## Keeper bot
+
+`scripts/keeper.js` keeps circles moving without a server:
+
+- It **settles rounds** as soon as everyone has paid or the deadline passes, paying the gas from a dedicated keeper wallet.
+- It sends **reminders** 24 hours before a deadline (or at 25% of the round time for short rounds), naming members who haven't paid.
+- It **announces** payouts, completed circles and dissolved circles.
+- It runs every 15 minutes on **GitHub Actions** (`.github/workflows/keeper.yml`). Messages go to the workflow log, and to a Telegram chat if `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` secrets are set.
+
+```bash
+npm run keeper:dry   # report what would happen
+npm run keeper       # settle due rounds (needs KEEPER_PRIVATE_KEY in .env)
+```
 
 ## Deployment (testnet)
 
 | | |
 |---|---|
 | Network | Electroneum Smart Chain testnet (chain ID 5201420) |
-| Contract (v2) | [`0x689A45c44430C1b0DEc84132daaC06faE763Cb75`](https://testnet-blockexplorer.electroneum.com/address/0x689A45c44430C1b0DEc84132daaC06faE763Cb75) (source verified) |
-| Showcase circles | #0 "Nairobi Market Chama": completed, all paid out. #1 "Accra Family Susu": active, weekly rounds. #2 "ETN Builders Circle": open, with free seats anyone can join. |
-| v1 (previous) | [`0x6DF34bE78c79C2aEC2D04cEA818DB61De6bDEb6F`](https://testnet-blockexplorer.electroneum.com/address/0x6DF34bE78c79C2aEC2D04cEA818DB61De6bDEb6F) (invite-only circles, no nicknames) |
+| SavingsCircles (v3) | [`0x850Aca8d6E879830526dd1cD72919b0E71E0b106`](https://testnet-blockexplorer.electroneum.com/address/0x850Aca8d6E879830526dd1cD72919b0E71E0b106) (source verified) |
+| SavingsBadges | [`0xce3a559061F6a5AffC14c61B6Dba85014b2229FA`](https://testnet-blockexplorer.electroneum.com/address/0xce3a559061F6a5AffC14c61B6Dba85014b2229FA) (source verified) |
+| Showcase circles | Seeded by the developer for demonstration. #0 "Nairobi Market Chama": completed, badges awarded. #1 "Accra Family Susu": active, weekly rounds. #2 "ETN Builders Circle": open to anyone. #3 "Trusted Savers Club": open, requires 1+ completed circle. |
+| Previous versions | v2 [`0x689A45c4…3Cb75`](https://testnet-blockexplorer.electroneum.com/address/0x689A45c44430C1b0DEc84132daaC06faE763Cb75), v1 [`0x6DF34bE7…bDEb6F`](https://testnet-blockexplorer.electroneum.com/address/0x6DF34bE78c79C2aEC2D04cEA818DB61De6bDEb6F) (reputation starts fresh in v3) |
 
 ## Web app
 
@@ -44,6 +77,7 @@ There is no admin key and no fee, and the contract can't be upgraded. Funds can 
 - **Circle page:** join with a nickname, pay, settle, leave before the start, or cancel. Includes an on-chain activity timeline and every member's status.
 - **Invites:** QR code, WhatsApp, Telegram, copy link, or the phone's share menu.
 - **Reminders:** download a calendar reminder (.ics) for your next payment deadline.
+- **Savings profiles:** a score gauge, track record and badge gallery for any address, plus score chips next to every member, a "Savings score" card on the dashboard, and eligibility checks for track-record circles.
 - **Installable:** add it to your phone's home screen like an app (PWA), with dark and light mode.
 
 ```bash
@@ -54,6 +88,8 @@ npm run test:e2e   # drives the app in headless Chrome against a local chain
 The app is plain static files (`app/index.html`, `app/app.js`, `app/styles.css`, `app/config.js`, `app/vendor/`), so it can be hosted anywhere: GitHub Pages, Netlify, Vercel or IPFS.
 
 ## Development
+
+Every push runs the contract tests and the end-to-end browser tests on GitHub Actions (`.github/workflows/ci.yml`), and pushes to `main` deploy the app to Netlify when they pass.
 
 ```bash
 npm install --legacy-peer-deps
@@ -66,7 +102,8 @@ Put your deployer key in `.env` as `PRIVATE_KEY=0x...`. That file is excluded fr
 
 ## Known limitations and next steps
 
-- The deposit covers one missed payment. A member who has already received the pot early in the rotation is only bound by that deposit. Possible fixes are larger deposits, or on-chain reputation that lets members who have finished circles cleanly join larger ones.
+- The deposit covers one missed payment. A member who has already received the pot early in the rotation is only bound by that deposit and their reputation. Track-record circles reduce this risk; larger deposits for newcomers would reduce it further.
+- Reputation can be farmed by running small circles between your own wallets; it costs only gas. Weighting by amount saved, or attestations from known savers, would make it harder to game.
 - Contributions are in native ETN only. A stable-value token option would help with price swings.
 - The contract has tests but has not been externally audited. It needs an audit before mainnet use with real funds.
-- Next steps: push or SMS payment reminders, integration with the ETN app wallet, and on-chain reputation from completed circles.
+- Next steps: integration with the ETN app wallet, SMS reminders, and stable-value contributions.
