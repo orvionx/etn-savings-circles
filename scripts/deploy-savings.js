@@ -8,14 +8,18 @@ async function main() {
   console.log(`Balance:  ${ethers.formatEther(await ethers.provider.getBalance(deployer.address))} ETN`);
 
   const sc = await ethers.deployContract("SavingsCircles");
-  console.log(`Tx hash:  ${sc.deploymentTransaction().hash}`);
+  const tx = sc.deploymentTransaction();
+  console.log(`Tx hash:  ${tx.hash}`);
   await sc.waitForDeployment();
+  const receipt = await tx.wait();
   const address = await sc.getAddress();
-  console.log(`SavingsCircles deployed at: ${address}`);
+  console.log(`SavingsCircles deployed at: ${address} (block ${receipt.blockNumber})`);
 
   const file = "deployments.json";
   const all = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : {};
-  all[network.name] = { ...(all[network.name] || {}), SavingsCircles: address, deployTx: sc.deploymentTransaction().hash };
+  const prev = all[network.name] || {};
+  const history = prev.history || (prev.SavingsCircles ? [{ SavingsCircles: prev.SavingsCircles, deployTx: prev.deployTx }] : []);
+  all[network.name] = { SavingsCircles: address, deployTx: tx.hash, deployBlock: receipt.blockNumber, history: [...history, { SavingsCircles: address, deployTx: tx.hash, deployBlock: receipt.blockNumber }] };
   fs.writeFileSync(file, JSON.stringify(all, null, 2) + "\n");
 }
 
