@@ -10,7 +10,7 @@ const ABI = [
   "function circlesCompleted() view returns (uint256)",
   "function withdrawable(address) view returns (uint256)",
   "function createCircle(string name, address[] members, uint128 contribution, uint64 roundDuration) returns (uint256)",
-  "function createOpenCircle(string name, uint32 size, uint128 contribution, uint64 roundDuration) returns (uint256)",
+  "function createOpenCircle(string name, uint32 size, uint128 contribution, uint64 roundDuration, uint32 minCompleted) returns (uint256)",
   "function join(uint256 id, string nickname) payable",
   "function leave(uint256 id)",
   "function cancelForming(uint256 id)",
@@ -21,7 +21,12 @@ const ABI = [
   "function getCircle(uint256 id) view returns (address creator, string name, uint256 contribution, uint64 roundDuration, uint64 roundDeadline, uint32 round, uint32 size, uint32 joinedCount, uint32 paidCount, uint8 status, bool open, address[] members)",
   "function getMemberDetails(uint256 id) view returns (address[] addrs, string[] nicknames, bool[] joined, bool[] paidThisRound, bool[] depositUsed, uint32[] defaults)",
   "function getUserCircles(address account) view returns (uint256[])",
-  "event CircleCreated(uint256 indexed id, address indexed creator, string name, bool open, uint32 size, uint256 contribution, uint64 roundDuration)",
+  "function getReputation(address account) view returns (uint32 joined, uint32 completed, uint32 onTimePayments, uint32 missedPayments, uint32 defaulted)",
+  "function requirementOf(uint256 id) view returns (uint32)",
+  "function isEligible(uint256 id, address account) view returns (bool)",
+  "function badges() view returns (address)",
+  "event BadgeAwarded(uint256 indexed id, address indexed member, uint256 tokenId)",
+  "event CircleCreated(uint256 indexed id, address indexed creator, string name, bool open, uint32 size, uint256 contribution, uint64 roundDuration, uint32 minCompleted)",
   "event MemberJoined(uint256 indexed id, address indexed member, string nickname)",
   "event MemberLeft(uint256 indexed id, address indexed member)",
   "event NicknameSet(uint256 indexed id, address indexed member, string nickname)",
@@ -36,7 +41,7 @@ const ABI = [
   "error NicknameTooLong()", "error DuplicateMember(address member)", "error ZeroAddressMember()", "error UnknownCircle()",
   "error WrongStatus()", "error NotInvited()", "error NotMember()", "error AlreadyJoined()", "error WrongAmount()",
   "error NotCreator()", "error AlreadyPaid()", "error RoundClosed()", "error RoundStillOpen()",
-  "error NothingToWithdraw()", "error TransferFailed()", "error Reentrancy()",
+  "error NothingToWithdraw()", "error TransferFailed()", "error Reentrancy()", "error NotEligible()", "error InvalidRequirement()",
 ];
 const ERROR_TEXT = {
   InvalidMemberCount: "A circle needs between 2 and 50 members.",
@@ -58,8 +63,16 @@ const ERROR_TEXT = {
   RoundStillOpen: "The round can be settled once everyone has paid or the deadline passes.",
   NothingToWithdraw: "Nothing to collect yet.",
   TransferFailed: "The transfer failed.",
+  NotEligible: "This circle requires a savings track record you don't have yet.",
+  InvalidRequirement: "That track-record requirement isn't allowed.",
 };
 const STATUS = ["Forming", "Active", "Completed", "Cancelled"];
+const BADGE_ABI = [
+  "function totalSupply() view returns (uint256)",
+  "function tokensOf(address owner) view returns (uint256[])",
+  "function tokenURI(uint256 tokenId) view returns (string)",
+];
+const REQUIREMENTS = [[0, "Anyone"], [1, "1+ completed circle"], [3, "3+ completed circles"]];
 const DURATIONS = [[300, "5 min", "demo"], [3600, "1 hour"], [86400, "1 day"], [604800, "1 week"], [1209600, "2 weeks"], [2592000, "1 month"]];
 const AMOUNT_CHIPS = ["5", "10", "50", "100", "500"];
 
@@ -97,6 +110,60 @@ function avatarBg(addr) { const h = hueOf(addr); return `linear-gradient(135deg,
 function nameOf(m) { return m.nickname?.trim() || short(m.address); }
 function initial(m) { const n = m.nickname?.trim(); return n ? [...n][0] : m.address.slice(2, 3); }
 function avatar(m, cls = "") { return `<span class="av ${cls}" style="background:${avatarBg(m.address)}" title="${esc(nameOf(m))}">${esc(initial(m))}</span>`; }
+
+// Savings score: transparent, computed from on-chain reputation (see README).
+function scoreOf(r) {
+  if (!r || r.completed + r.onTimePayments + r.missedPayments + r.defaulted === 0) return null;
+  const v = 300 + 150 * r.completed + 4 * r.onTimePayments - 40 * r.missedPayments - 300 * r.defaulted;
+  return Math.max(0, Math.min(1000, v));
+}
+function tierOf(r) {
+  const sc = scoreOf(r);
+  if (sc === null) return { name: "New saver", cls: "new", score: null };
+  if (r.defaulted) return { name: "At risk", cls: "risk", score: sc };
+  if (sc >= 850) return { name: "Gold saver", cls: "gold", score: sc };
+  if (sc >= 650) return { name: "Silver saver", cls: "silver", score: sc };
+  return { name: "Bronze saver", cls: "bronze", score: sc };
+}
+function scoreChip(r) {
+  const t = tierOf(r);
+  return `<span class="score-chip ${t.cls}" title="${t.name}">${t.score === null ? "New" : "★ " + t.score}</span>`;
+}
+function gaugeSVG(r) {
+  const t = tierOf(r), R = 70, circ = Math.PI * R; // half circle
+  const frac = t.score === null ? 0 : t.score / 1000;
+  return `<svg viewBox="0 0 180 110" class="gauge" role="img" aria-label="Savings score ${t.score ?? "none"}">
+    <defs><linearGradient id="gg" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#00c08b"/><stop offset=".55" stop-color="#1fb6ff"/><stop offset="1" stop-color="#7c5cff"/></linearGradient></defs>
+    <path d="M20 95 A70 70 0 0 1 160 95" fill="none" stroke="var(--ring-track)" stroke-width="14" stroke-linecap="round"/>
+    <path d="M20 95 A70 70 0 0 1 160 95" fill="none" stroke="url(#gg)" stroke-width="14" stroke-linecap="round" stroke-dasharray="${circ}" stroke-dashoffset="${circ * (1 - frac)}" style="transition:stroke-dashoffset .8s ease"/>
+    <text x="90" y="82" text-anchor="middle" style="font:800 34px var(--font-display);fill:var(--text)">${t.score ?? "—"}</text>
+    <text x="90" y="104" text-anchor="middle" style="font:600 11px var(--font);fill:var(--muted);letter-spacing:.06em">${t.name.toUpperCase()}</text></svg>`;
+}
+const repCache = new Map();
+async function loadReputation(addr) {
+  const k = addr.toLowerCase();
+  if (!repCache.has(k)) {
+    repCache.set(k, reader.getReputation(addr).then((r) => ({
+      joined: Number(r.joined), completed: Number(r.completed), onTimePayments: Number(r.onTimePayments),
+      missedPayments: Number(r.missedPayments), defaulted: Number(r.defaulted),
+    })).catch((e) => { repCache.delete(k); throw e; }));
+  }
+  return repCache.get(k);
+}
+let badgeReader = null;
+async function getBadgeReader() {
+  if (!badgeReader) badgeReader = new ethers.Contract(await reader.badges(), BADGE_ABI, readProvider);
+  return badgeReader;
+}
+async function loadBadges(addr) {
+  const b = await getBadgeReader();
+  const ids = [...(await b.tokensOf(addr))].reverse();
+  return Promise.all(ids.map(async (id) => {
+    const uri = await b.tokenURI(id);
+    const json = JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(uri.split(",")[1]), (ch) => ch.charCodeAt(0))));
+    return { id: Number(id), ...json, attrs: Object.fromEntries((json.attributes || []).map((a) => [a.trait_type, a.value])) };
+  }));
+}
 
 function humanDuration(sec) {
   const hit = DURATIONS.find(([s]) => s === sec); if (hit) return hit[1];
@@ -245,11 +312,11 @@ if (window.ethereum?.on) {
 // ===================================================================== data
 async function loadCircle(id) {
   id = Number(id);
-  const [c, d] = await Promise.all([reader.getCircle(id), reader.getMemberDetails(id)]);
+  const [c, d, req] = await Promise.all([reader.getCircle(id), reader.getMemberDetails(id), reader.requirementOf(id)]);
   return {
     id, creator: c.creator, name: c.name, contribution: c.contribution, roundDuration: Number(c.roundDuration),
     deadline: Number(c.roundDeadline), round: Number(c.round), size: Number(c.size), joined: Number(c.joinedCount),
-    paid: Number(c.paidCount), status: STATUS[Number(c.status)], open: c.open,
+    paid: Number(c.paidCount), status: STATUS[Number(c.status)], open: c.open, minCompleted: Number(req),
     members: [...d.addrs].map((a, i) => ({
       address: a, nickname: d.nicknames[i], joined: d.joined[i], paid: d.paidThisRound[i],
       depositUsed: d.depositUsed[i], defaults: Number(d.defaults[i]),
@@ -269,8 +336,8 @@ async function loadMine() {
   return circles.filter((c) => same(c.creator, state.account) || c.members.some((m) => same(m.address, state.account)));
 }
 async function loadStats() {
-  const [paid, rounds, count, done] = await Promise.all([reader.totalPaidOut(), reader.roundsSettled(), reader.circleCount(), reader.circlesCompleted()]);
-  return { paid: etn(paid), rounds: Number(rounds), count: Number(count), done: Number(done) };
+  const [paid, rounds, count, badgeCount] = await Promise.all([reader.totalPaidOut(), reader.roundsSettled(), reader.circleCount(), getBadgeReader().then((b) => b.totalSupply())]);
+  return { paid: etn(paid), rounds: Number(rounds), count: Number(count), badges: Number(badgeCount) };
 }
 const meIn = (c) => state.account && c.members.find((m) => same(m.address, state.account));
 const isDue = (c) => c.status === "Active" && (c.paid === c.members.length || now() >= c.deadline);
@@ -414,7 +481,7 @@ function circleCard(c) {
       <div class="meta">
         <p class="title">${esc(c.name)}</p>
         <div class="row wrap-row" style="gap:6px;margin-top:4px"><span class="pill ${c.status}">${c.status}</span>
-          <span class="pill plain">${c.open ? "Open" : "Invite-only"}</span>${me ? '<span class="pill you plain">You’re in</span>' : ""}</div>
+          <span class="pill plain">${c.open ? "Open" : "Invite-only"}</span>${c.minCompleted ? `<span class="pill plain" title="Requires ${c.minCompleted}+ completed circle(s) and no defaults">🛡 Trusted</span>` : ""}${me ? '<span class="pill you plain">You’re in</span>' : ""}</div>
       </div>
     </div>
     <div class="row between"><div class="avatars">${people.map((m) => avatar(m, "sm")).join("")}${c.members.length > 5 ? `<span class="tiny muted" style="margin-left:6px">+${c.members.length - 5}</span>` : ""}</div>
@@ -450,11 +517,11 @@ async function viewHome() {
         <h1>Save together.<br><span class="grad-text">Get paid out in turn.</span></h1>
         <p class="lead">The chama, susu and tontine, rebuilt on Electroneum Smart Chain. Everyone pays the same amount each round and one member takes the whole pot. The smart contract holds the money, so nobody has to.</p>
         <div class="cta"><a class="btn primary large" href="#/new">Start a circle</a><a class="btn secondary large" href="#circles" data-tab-jump="open">Join an open circle</a></div>
-        <div class="trust"><span>No middleman</span><span>No fees</span><span>Deposits protect every member</span><span>Fractions of a cent per transaction</span></div>
+        <div class="trust"><span>No middleman</span><span>No fees</span><span>Deposits protect every member</span><span>Earn an on-chain savings reputation</span></div>
       </div>
       ${heroArt()}
     </section>
-    <div class="stats-strip" id="stats">${["ETN paid out", "Rounds settled", "Circles created", "Circles completed"].map((k) => `<div class="stat-tile"><div class="k">${k}</div><div class="v">—</div></div>`).join("")}</div>
+    <div class="stats-strip" id="stats">${["ETN paid out", "Rounds settled", "Circles created", "Badges earned"].map((k) => `<div class="stat-tile"><div class="k">${k}</div><div class="v">—</div></div>`).join("")}</div>
     <div id="dash"></div>
     <div class="section-head" id="circles"><div><h2>Circles</h2><p>Browse what's happening on-chain right now.</p></div><a class="btn small secondary" href="#/new">+ New circle</a></div>
     <div class="tabs" role="tablist">
@@ -468,7 +535,7 @@ async function viewHome() {
       <div class="card"><div class="n">1</div><b>Create</b><p>Pick an amount, how often you pay, and either open seats or a member list.</p></div>
       <div class="card"><div class="n">2</div><b>Join</b><p>Each member locks a one-round deposit. It covers one missed payment and comes back at the end.</p></div>
       <div class="card"><div class="n">3</div><b>Pay each round</b><p>Everyone pays in. Once all have paid, the whole pot goes to that round's member.</p></div>
-      <div class="card"><div class="n">4</div><b>Collect</b><p>Everyone gets the pot exactly once. Withdraw payouts and your deposit any time.</p></div>
+      <div class="card"><div class="n">4</div><b>Collect & level up</b><p>Everyone gets the pot once. Finishing earns a badge NFT and raises your savings score.</p></div>
     </div>`;
   $$("[data-tab]", view).forEach((b) => b.onclick = () => { state.tab = b.dataset.tab; $$("[data-tab]").forEach((x) => x.setAttribute("aria-selected", x === b)); renderList(); });
   $("[data-tab-jump]", view).onclick = () => { state.tab = "open"; $$("[data-tab]").forEach((x) => x.setAttribute("aria-selected", x.dataset.tab === "open")); renderList(); };
@@ -478,7 +545,7 @@ async function viewHome() {
     try {
       state.stats ??= await loadStats();
       const s = state.stats, el = $("#stats"); if (!el) return;
-      el.innerHTML = statTile("ETN paid out", s.paid, "ETN", "paid") + statTile("Rounds settled", s.rounds, "", "rounds") + statTile("Circles created", s.count, "", "count") + statTile("Circles completed", s.done, "", "done");
+      el.innerHTML = statTile("ETN paid out", s.paid, "ETN", "paid") + statTile("Rounds settled", s.rounds, "", "rounds") + statTile("Circles created", s.count, "", "count") + statTile("Badges earned", s.badges, "", "badges");
       countUp(el);
     } catch (e) { console.error(e); }
   })();
@@ -507,6 +574,10 @@ async function renderDashboard() {
     }
   }
   const active = state.mine.filter((c) => c.status === "Active" || c.status === "Forming").length;
+  let myRep = null;
+  try { myRep = await loadReputation(state.account); } catch {}
+  if (!$("#dash")) return;
+  const tier = tierOf(myRep);
   el.innerHTML = `<div class="section-head"><div><h2>Your dashboard</h2><p>${active} active circle${active === 1 ? "" : "s"}</p></div></div>
     <div class="dash">
       <div class="card collect pad-lg">
@@ -514,7 +585,12 @@ async function renderDashboard() {
         <div class="v num">${fmt(state.withdrawable)}</div>
         ${state.withdrawable > 0n ? `<button class="btn" data-act="withdraw">Withdraw to wallet</button>` : `<span class="small" style="opacity:.85">Payouts and refunds appear here.</span>`}
       </div>
-      <div class="card"><b>To do</b>${todos.length ? `<ul class="todo" style="margin-top:8px">${todos.join("")}</ul>` : `<p class="muted small" style="margin:8px 0 0">You're all caught up. 🎯</p>`}</div>
+      <a class="card score-card" href="#/u/${state.account}">
+        <div class="row between"><b>Savings score</b><span class="small muted">View profile →</span></div>
+        <div class="row" style="gap:14px;margin-top:6px">${gaugeSVG(myRep)}
+          <div class="small muted">${myRep && tier.score !== null ? `<b class="num" style="color:var(--text)">${myRep.completed}</b> circles completed<br><b class="num" style="color:var(--text)">${myRep.onTimePayments}</b> on-time payments${myRep.missedPayments ? `<br><b class="num" style="color:var(--danger)">${myRep.missedPayments}</b> missed` : ""}` : "Complete your first circle to earn a score and a badge."}</div></div>
+      </a>
+      <div class="card todo-card"><b>To do</b>${todos.length ? `<ul class="todo" style="margin-top:8px">${todos.join("")}</ul>` : `<p class="muted small" style="margin:8px 0 0">You're all caught up. 🎯</p>`}</div>
     </div>`;
 }
 
@@ -542,7 +618,7 @@ async function renderList() {
 // ------------------------------------------------------------------ create
 function viewCreate() {
   const view = $("#view");
-  const f = { open: true, name: "", amount: "10", duration: 604800, seats: 5, members: "", nickname: "", seat: true };
+  const f = { open: true, name: "", amount: "10", duration: 604800, seats: 5, members: "", nickname: "", seat: true, req: 0 };
   view.innerHTML = `<a class="back" href="#/">← Back</a>
     <div class="detail-head"><h1>Start a savings circle</h1><p class="muted" style="margin:0 0 18px">Set the rules once. The smart contract enforces them for everyone.</p></div>
     <div class="create-layout">
@@ -558,6 +634,9 @@ function viewCreate() {
           <div class="chips" id="dur-chips" style="margin-top:0">${DURATIONS.map(([s, l, t]) => `<button type="button" data-dur="${s}" aria-pressed="${s === 604800}">${l}${t ? ` <span style="opacity:.7">· ${t}</span>` : ""}</button>`).join("")}</div></div>
         <div id="seats-box"><span class="label">Number of members</span>
           <div class="stepper"><button type="button" data-step="-1" aria-label="Fewer">−</button><output id="f-seats">5</output><button type="button" data-step="1" aria-label="More">+</button></div></div>
+        <div id="req-box"><span class="label">Who may take a seat? <span class="hint">· a track record makes the circle safer</span></span>
+          <div class="chips" id="req-chips" style="margin-top:0">${REQUIREMENTS.map(([v, l]) => `<button type="button" data-req="${v}" aria-pressed="${v === 0}">${v ? "🛡 " : ""}${l}</button>`).join("")}</div>
+          <div class="hint" id="req-hint" style="margin-top:6px"></div></div>
         <div id="members-box" hidden>
           <label for="f-members">Members in payout order <span class="hint">· one wallet address per line. The first is paid in round 1.</span></label>
           <textarea id="f-members" class="mono" placeholder="0x…&#10;0x…&#10;0x…" spellcheck="false"></textarea>
@@ -602,6 +681,9 @@ function viewCreate() {
     $("#seat-hint").textContent = amt ? `Locks a ${fmt(amt)} deposit${f.open ? ". You'll be member #1 and get the first pot." : " (you get it back at the end)."}` : "Locks a one-round deposit.";
     $$("#amount-chips button").forEach((b) => b.setAttribute("aria-pressed", $("#f-amount").value.trim() === b.dataset.amt));
     $$("#dur-chips button").forEach((b) => b.setAttribute("aria-pressed", Number(b.dataset.dur) === f.duration));
+    $$("#req-chips button").forEach((b) => b.setAttribute("aria-pressed", Number(b.dataset.req) === f.req));
+    $("#req-box").hidden = !f.open;
+    $("#req-hint").textContent = f.req ? `Only wallets with ${f.req}+ completed circle${f.req > 1 ? "s" : ""} and no defaults can join. You need to meet it too to take a seat.` : "Anyone with the link can join.";
     $("#f-seats").textContent = f.seats;
     const preview = {
       id: "pv", name: f.name || "Your circle", size, joined: 0, round: 0, status: "Forming", open: f.open, roundDuration: f.duration,
@@ -624,6 +706,7 @@ function viewCreate() {
   });
   $$("#amount-chips button").forEach((b) => b.onclick = () => { $("#f-amount").value = b.dataset.amt; update(); });
   $$("#dur-chips button").forEach((b) => b.onclick = () => { f.duration = Number(b.dataset.dur); update(); });
+  $$("#req-chips button").forEach((b) => b.onclick = () => { f.req = Number(b.dataset.req); update(); });
   $$("[data-step]", form).forEach((b) => b.onclick = () => { f.seats = Math.max(2, Math.min(50, f.seats + Number(b.dataset.step))); update(); });
   $("#add-me").onclick = async () => {
     if (!state.account) await connect();
@@ -648,7 +731,7 @@ function viewCreate() {
     errEl.hidden = true;
     const btn = $("#create-btn"); btn.disabled = true;
     const receipt = f.open
-      ? await sendTx("Create circle", (c) => c.createOpenCircle(f.name, f.seats, amt, f.duration))
+      ? await sendTx("Create circle", (c) => c.createOpenCircle(f.name, f.seats, amt, f.duration, f.req))
       : await sendTx("Create circle", (c) => c.createCircle(f.name, pm.members, amt, f.duration));
     if (!receipt) { btn.disabled = false; return; }
     const evt = receipt.logs.map((l) => { try { return iface.parseLog(l); } catch { return null; } }).find((x) => x?.name === "CircleCreated");
@@ -680,11 +763,22 @@ async function viewCircle(id) {
   const recipient = c.status === "Active" ? c.members[c.round] : null;
   const pot = c.contribution * BigInt(n);
   const canJoin = c.status === "Forming" && (!me || !me.joined) && (c.open || me);
+  const [reps, eligible, myRep] = await Promise.all([
+    Promise.all(c.members.map((m) => loadReputation(m.address).catch(() => null))),
+    state.account && c.minCompleted ? reader.isEligible(id, state.account).catch(() => true) : true,
+    state.account && c.minCompleted ? loadReputation(state.account).catch(() => null) : null,
+  ]);
+  if (location.hash !== `#/circle/${id}`) return;
+  const reqText = c.minCompleted ? `${c.minCompleted}+ completed circle${c.minCompleted > 1 ? "s" : ""} and no defaults` : "";
 
   // ---- action panel
   let head = "", body = "", acts = [];
   if (c.status === "Forming") {
-    if (canJoin) {
+    if (canJoin && c.open && !eligible) {
+      head = "🛡 Track record required";
+      body = `Seats in this circle are reserved for savers with <b>${reqText}</b>. You have ${myRep?.completed ?? 0} completed circle${myRep?.completed === 1 ? "" : "s"}${myRep?.defaulted ? " and a default on record" : ""}. Complete an open circle first to build your score.`;
+      acts.push(`<a class="btn secondary" href="#/" data-goto-open>Find a circle to start with</a>`);
+    } else if (canJoin) {
       head = c.open ? "🪑 A seat is waiting for you" : "✉️ You're invited";
       body = `Join by locking a <b>${fmt(c.contribution)}</b> deposit. It covers one missed payment and comes back when the circle ends. ${c.open ? `You'll be member <b>#${c.members.length + 1}</b> in the payout order.` : ""}
         <div style="margin-top:12px"><label for="j-nick">Nickname <span class="hint">(optional)</span></label><input id="j-nick" maxlength="32" placeholder="How members will see you"></div>`;
@@ -705,7 +799,7 @@ async function viewCircle(id) {
     else if (me) { head = "👍 You've paid this round"; body = `${c.paid} of ${c.members.length} members have paid. The round can be settled once everyone pays or the deadline passes.`; }
     else { head = `Round ${c.round + 1} in progress`; body = `${c.paid} of ${c.members.length} members have paid. <b>${esc(nameOf(recipient))}</b> receives this round's pot.`; }
     if (me && !due) acts.push(`<button class="btn secondary" data-act="ics" data-id="${id}">📅 Add reminder</button>`);
-  } else if (c.status === "Completed") { head = "🏁 Circle completed"; body = `Every member received the <b>${fmt(pot)}</b> pot once, and unused deposits were returned.`; }
+  } else if (c.status === "Completed") { head = "🏁 Circle completed"; body = `Every member received the <b>${fmt(pot)}</b> pot once, unused deposits were returned, and every member earned a 🏅 badge NFT.`; if (me) acts.push(`<a class="btn secondary" href="#/u/${state.account}">See my badge</a>`); }
   else { head = "Circle dissolved"; body = "This circle was cancelled or dissolved, and refunds were credited to members."; }
   if (me && state.withdrawable > 0n) acts.push(`<button class="btn secondary" data-act="withdraw">Collect ${fmt(state.withdrawable)}</button>`);
   if (!state.account && (c.status === "Forming" || c.status === "Active")) acts = [`<button class="btn primary large" data-act="connect">Connect wallet to take part</button>`];
@@ -723,13 +817,13 @@ async function viewCircle(id) {
     if (same(m.address, state.account)) tags.push("you");
     if (same(m.address, c.creator)) tags.push("creator");
     if (m.depositUsed) tags.push(`<span style="color:var(--danger)">missed ${m.defaults}× · deposit used</span>`);
-    rows.push(`<li><span class="pos">${i + 1}</span>${avatar(m)}<div class="who"><b>${esc(nameOf(m))}</b>
+    rows.push(`<li><span class="pos">${i + 1}</span>${avatar(m)}<div class="who"><b><a class="plain-link" href="#/u/${m.address}">${esc(nameOf(m))}</a> ${reps[i] ? scoreChip(reps[i]) : ""}</b>
       <span class="tiny muted"><a class="mono" href="${addrUrl(m.address)}" target="_blank" rel="noopener">${short(m.address)}</a>${tags.length ? " · " + tags.join(" · ") : ""}</span></div>${st}</li>`);
   }
 
   view.innerHTML = `<a class="back" href="#/">← All circles</a>
     <div class="detail-head">
-      <div class="row wrap-row" style="gap:6px"><span class="pill ${c.status}">${c.status}</span><span class="pill plain">${c.open ? "🔗 Open" : "🔒 Invite-only"}</span>${me ? '<span class="pill you plain">You’re in</span>' : ""}</div>
+      <div class="row wrap-row" style="gap:6px"><span class="pill ${c.status}">${c.status}</span><span class="pill plain">${c.open ? "🔗 Open" : "🔒 Invite-only"}</span>${c.minCompleted ? `<span class="pill plain">🛡 Requires ${reqText}</span>` : ""}${me ? '<span class="pill you plain">You’re in</span>' : ""}</div>
       <h1>${esc(c.name)}</h1>
       <p class="muted small" style="margin:0 0 16px">Circle #${id} · created by <a href="${addrUrl(c.creator)}" target="_blank" rel="noopener">${short(c.creator)}</a> · ${n} members · every ${humanDuration(c.roundDuration)}</p>
     </div>
@@ -777,7 +871,7 @@ async function loadActivity(c) {
   const el = $("#activity"); if (!el) return;
   try {
     const logs = await getLogsSafe({ address: CFG.contract, fromBlock: CFG.deployBlock || 0, toBlock: "latest", topics: [null, ethers.zeroPadValue(ethers.toBeHex(c.id), 32)] });
-    const events = logs.map((l) => { try { return { log: l, ev: iface.parseLog(l) }; } catch { return null; } }).filter((x) => x && x.ev.name !== "Withdrawn").reverse().slice(0, 40);
+    const events = logs.map((l) => { try { return { log: l, ev: iface.parseLog(l) }; } catch { return null; } }).filter((x) => x && x.ev.name !== "Withdrawn" && x.ev.name !== "BadgeAwarded").reverse().slice(0, 40);
     // Timestamps are cosmetic: fetch them for the newest events only, and tolerate failures.
     const blocks = [...new Set(events.slice(0, 12).map((e) => e.log.blockNumber))];
     const times = Object.fromEntries(await Promise.all(blocks.map(async (b) => {
@@ -795,7 +889,7 @@ async function loadActivity(c) {
         case "Contributed": dot = "g"; icon = "✓"; text = `<b>${who(a.member)}</b> paid round ${Number(a.round) + 1}`; break;
         case "DepositUsed": dot = "r"; icon = "!"; text = `<b>${who(a.member)}</b> missed round ${Number(a.round) + 1} — covered by deposit`; break;
         case "RoundSettled": dot = "y"; icon = "★"; text = `Round ${Number(a.round) + 1}: <b>${fmt(a.pot)}</b> sent to <b>${who(a.recipient)}</b>`; break;
-        case "CircleCompleted": dot = "g"; icon = "🏁"; text = `Circle completed — deposits returned`; break;
+        case "CircleCompleted": dot = "g"; icon = "🏁"; text = `Circle completed — deposits returned, badges awarded 🏅`; break;
         case "CircleCancelled": dot = "r"; icon = "×"; text = Number(a.round) === 0 && a.defaulter === ethers.ZeroAddress ? "Circle cancelled — deposits refunded" : `Circle dissolved after a repeat miss by <b>${who(a.defaulter)}</b>`; break;
         default: return "";
       }
@@ -807,6 +901,52 @@ async function loadActivity(c) {
     const more = $("#more-activity");
     if (more) more.onclick = () => { $(".timeline", el).classList.add("expanded"); more.remove(); };
   } catch (e) { console.error(e); el.innerHTML = `<span class="small muted">Activity couldn't be loaded from this network right now.</span>`; }
+}
+
+// ------------------------------------------------------------------ profile
+async function viewProfile(param) {
+  const view = $("#view");
+  const addr = param === "me" ? state.account : param;
+  if (!addr || !ethers.isAddress(addr)) {
+    view.innerHTML = `<a class="back" href="#/">← Home</a><div class="card empty"><div class="em">👤</div><p>${param === "me" ? "Connect your wallet to see your savings profile." : "That isn't a valid wallet address."}</p>${param === "me" ? '<button class="btn primary" data-act="connect">Connect wallet</button>' : ""}</div>`;
+    return;
+  }
+  const address = ethers.getAddress(addr);
+  const isMe = same(address, state.account);
+  view.innerHTML = `<a class="back" href="#/">← Home</a><div class="skeleton" style="min-height:260px"></div>`;
+  let r, badges, circles;
+  try {
+    [r, badges, circles] = await Promise.all([
+      loadReputation(address), loadBadges(address),
+      reader.getUserCircles(address).then((ids) => Promise.all([...new Set(ids.map(Number))].reverse().map(loadCircle))),
+    ]);
+  } catch (e) { console.error(e); view.innerHTML = `<a class="back" href="#/">← Home</a><div class="card empty"><div class="em">📡</div>Couldn't load this profile. <button class="btn small secondary" data-act="reload">Retry</button></div>`; return; }
+  if (!location.hash.startsWith("#/u/")) return;
+  circles = circles.filter((c) => same(c.creator, address) || c.members.some((m) => same(m.address, address)));
+  const nick = circles.flatMap((c) => c.members).find((m) => same(m.address, address) && m.nickname)?.nickname;
+  const who = { address, nickname: nick || "" };
+  const t = tierOf(r);
+  const badgeHtml = badges.length ? `<div class="badge-grid">${badges.map((b) => `<a class="badge-card" href="#/circle/${b.attrs["Circle ID"]}">
+      <img src="${esc(b.image)}" alt="${esc(b.name)}" loading="lazy"><div class="small"><b>${esc(b.attrs.Circle)}</b><br><span class="muted">${b.attrs["Perfect record"] === "Yes" ? "Perfect record" : `${b.attrs["Missed payments"]} missed`} · #${b.id}</span></div></a>`).join("")}</div>`
+    : `<p class="muted small" style="margin:6px 0 0">No badges yet. Every member of a completed circle earns one.</p>`;
+  view.innerHTML = `<a class="back" href="#/">← Home</a>
+    <div class="profile-head">${avatar(who, "xl")}<div style="min-width:0">
+      <h1>${esc(nick || (isMe ? "Your profile" : short(address)))}</h1>
+      <div class="small muted"><a class="mono" href="${addrUrl(address)}" target="_blank" rel="noopener">${short(address)}</a> · <span class="tier ${t.cls}">${t.name}</span>${isMe ? " · you" : ""}</div></div></div>
+    <div class="profile-grid">
+      <div class="card pad-lg" style="text-align:center"><b>Savings score</b>${gaugeSVG(r)}
+        <p class="tiny muted" style="margin:4px 0 0">From on-chain history: +150 per completed circle, +4 per on-time payment, −40 per missed payment, −300 per default.</p></div>
+      <div class="card pad-lg"><b>Track record</b><div class="kv" style="margin-top:10px">
+        <div><div class="k">Completed</div><div class="v">${r.completed}</div></div>
+        <div><div class="k">On-time payments</div><div class="v">${r.onTimePayments}</div></div>
+        <div><div class="k">Missed</div><div class="v" style="${r.missedPayments ? "color:var(--danger)" : ""}">${r.missedPayments}</div></div>
+        <div><div class="k">Defaults</div><div class="v" style="${r.defaulted ? "color:var(--danger)" : ""}">${r.defaulted}</div></div>
+      </div><p class="tiny muted" style="margin:10px 0 0">Recorded by the smart contract. Nobody can edit it, including the app's developers.</p></div>
+    </div>
+    <div class="section-head"><div><h2>Badges</h2><p>Soulbound NFTs: earned, never bought or transferred.</p></div><span class="pill plain">${badges.length}</span></div>
+    ${badgeHtml}
+    <div class="section-head"><div><h2>Circles</h2></div></div>
+    ${circles.length ? `<div class="grid">${circles.map(circleCard).join("")}</div>` : `<div class="card empty">No circles yet.</div>`}`;
 }
 
 // ------------------------------------------------------------------ share & calendar
@@ -851,6 +991,8 @@ async function route({ keepScroll = false } = {}) {
   const m = location.hash.match(/^#\/circle\/(\d+)$/);
   if (m) return viewCircle(Number(m[1]));
   if (location.hash === "#/new") return viewCreate();
+  const u = location.hash.match(/^#\/u\/(me|0x[0-9a-fA-F]{40})$/);
+  if (u) return viewProfile(u[1]);
   if (location.hash === "#circles") return; // in-page anchor
   return viewHome();
 }
@@ -880,7 +1022,10 @@ document.addEventListener("click", async (ev) => {
     }
   } finally { el.disabled = false; }
 });
-$("#connect").onclick = () => connect();
+$("#connect").onclick = () => { if (state.account) location.hash = "#/u/me"; else connect(); };
+document.addEventListener("click", (ev) => {
+  if (ev.target.closest("[data-goto-open]")) { state.tab = "open"; }
+});
 
 setInterval(() => {
   $$("[data-deadline]").forEach((el) => el.textContent = countdown(Number(el.dataset.deadline)));

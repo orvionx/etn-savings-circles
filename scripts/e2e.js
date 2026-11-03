@@ -165,6 +165,16 @@ async function main() {
   check(/Amina joined/.test(activity) && /Round 3: 4\.5 ETN sent to Njeri/.test(activity), "activity timeline shows joins and payouts");
   await a.screenshot({ path: path.join(OUT, "3b-circle-completed.png"), fullPage: true });
 
+  console.log("Reputation + badges");
+  check(/★ 462/.test(await text(a, ".members")), "members list shows savings score chips (★ 462)");
+  await fresh(a, `#/u/${accounts[0]}`);
+  await a.waitForSelector(".badge-card img", { timeout: 20000 });
+  const prof = await text(a, "#view");
+  check(/Amina/.test(prof) && /Completed\s*1/.test(prof) && /On-time payments\s*3/.test(prof), "profile shows nickname and track record");
+  check((await a.$$(".badge-card")).length === 1 && /Perfect record/.test(prof), "profile shows the soulbound badge (perfect record)");
+  check(/462/.test(await text(a, ".gauge")), "savings score gauge = 462");
+  await a.screenshot({ path: path.join(OUT, "3c-profile.png"), fullPage: true });
+
   console.log("Dashboard + withdraw");
   for (const [i, p] of [a, b, c].entries()) {
     await fresh(p, "#/");
@@ -181,6 +191,7 @@ async function main() {
   await viewer.waitForSelector('[data-key="paid"]');
   await new Promise((r) => setTimeout(r, 1200));
   check((await text(viewer, '[data-key="paid"]')) === "13.5", `stats: ETN paid out = ${await text(viewer, '[data-key="paid"]')}`);
+  check((await text(viewer, '[data-key="badges"]')) === "3", `stats: badges earned = ${await text(viewer, '[data-key="badges"]')}`);
 
   console.log("Open circle: join then leave");
   await fresh(a, "#/new"); await a.waitForSelector("#create-form");
@@ -215,7 +226,23 @@ async function main() {
   await goCircle(outsider, 2);
   check((await text(outsider, ".action-card")).includes("Members only"), "outsider can't join an invite-only circle");
 
+  console.log("Track-record requirement");
+  await fresh(a, "#/new"); await a.waitForSelector("#create-form");
+  await a.type("#f-name", "Trusted Savers");
+  await a.click('#req-chips [data-req="1"]');
+  check(/1\+ completed circle and no defaults/.test(await text(a, "#req-hint")), "requirement hint explains the rule");
+  await clearToasts(a);
+  await a.click("#create-btn");
+  await waitDone(a, "create trusted circle + take seat (creator qualifies)", 2);
+  await a.waitForFunction(() => location.hash === "#/circle/3", { timeout: 15000 });
+  await goCircle(outsider, 3);
+  check((await text(outsider, ".action-card")).includes("Track record required"), "newcomer sees 'Track record required' instead of Join");
+  check(!(await outsider.$('.action-card [data-act="join"]')), "newcomer has no Join button");
+  await goCircle(b, 3);
+  await act(b, '.action-card [data-act="join"]', "Kofi (1 completed circle) joins the trusted circle");
+
   console.log("Share + validation");
+  await goCircle(outsider, 2);
   await outsider.click('.card [data-act="share"]');
   await outsider.waitForSelector(".modal .qr svg");
   check((await outsider.$eval("#share-url", (e) => e.value)).endsWith("#/circle/2"), "share modal has QR code and circle link");
