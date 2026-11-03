@@ -1,0 +1,162 @@
+// End-to-end test: drives the real web app in headless Chrome against a local Hardhat
+// node. A fake EIP-1193 wallet is injected into each page and forwards requests to
+// the node's unlocked accounts.
+//   node scripts/e2e.js        (needs Chrome or Edge installed)
+const { spawn, spawnSync } = require("child_process");
+const fs = require("fs");
+const path = require("path");
+const puppeteer = require("puppeteer-core");
+const { ethers } = require("ethers");
+
+const RPC = "http://127.0.0.1:8545";
+const APP_PORT = 5174;
+const OUT = process.env.E2E_OUT || path.join(__dirname, "..", "e2e-screens");
+const BROWSERS = [
+  "C:/Program Files/Google/Chrome/Application/chrome.exe",
+  "C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe",
+  "/usr/bin/google-chrome", "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+];
+
+const procs = [];
+function start(cmd, args, readyText) {
+  return new Promise((resolve, reject) => {
+    const p = spawn([cmd, ...args].join(" "), { shell: true, cwd: path.join(__dirname, "..") });
+    procs.push(p);
+    const onData = (d) => { if (d.toString().includes(readyText)) resolve(p); };
+    p.stdout.on("data", onData); p.stderr.on("data", onData);
+    p.on("exit", (code) => reject(new Error(`${cmd} exited with ${code}`)));
+  });
+}
+function cleanup() { for (const p of procs) { try { process.platform === "win32" ? spawnSync("taskkill", ["/pid", String(p.pid), "/f", "/t"]) : p.kill(); } catch {} } }
+
+let failures = 0;
+function check(cond, msg) { console.log(`${cond ? "  ✔" : "  ✘"} ${msg}`); if (!cond) failures++; }
+
+async function main() {
+  fs.mkdirSync(OUT, { recursive: true });
+  await start("npx", ["hardhat", "node"], "Started HTTP and WebSocket JSON-RPC server");
+  await start("node", ["scripts/serve.js", String(APP_PORT)], "Savings Circles app");
+
+  const provider = new ethers.JsonRpcProvider(RPC);
+  const deployer = await provider.getSigner(0);
+  const artifact = require("../artifacts/contracts/SavingsCircles.sol/SavingsCircles.json");
+  const factory = new ethers.ContractFactory(artifact.abi, artifact.bytecode, deployer);
+  const sc = await factory.deploy(); await sc.waitForDeployment();
+  const contract = await sc.getAddress();
+  const accounts = (await provider.send("eth_accounts", [])).slice(1, 4);
+  console.log(`Local contract ${contract}`);
+
+  const executablePath = BROWSERS.find((b) => fs.existsSync(b));
+  const browser = await puppeteer.launch({ executablePath, headless: true, args: ["--no-sandbox", "--disable-background-timer-throttling", "--disable-renderer-backgrounding", "--disable-backgrounding-occluded-windows"], protocolTimeout: 60000 });
+  const base = `http://localhost:${APP_PORT}/?rpc=${encodeURIComponent(RPC)}&chainId=31337&contract=${contract}`;
+  const consoleErrors = [];
+
+  async function openAs(account) {
+    const page = await browser.newPage();
+    await page.setViewport({ width: 390, height: 844, deviceScaleFactor: 1 });
+    page.on("pageerror", (e) => consoleErrors.push(e.message));
+    page.on("console", (m) => { if (m.type() === "error") consoleErrors.push(m.text()); });
+    await page.evaluateOnNewDocument((rpc, acct) => {
+      let id = 0;
+      const call = async (method, params = []) => {
+        const r = await fetch(rpc, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: ++id, method, params }) });
+        const j = await r.json();
+        if (j.error) { const e = new Error(j.error.message); e.code = j.error.code; e.data = j.error.data; throw e; }
+        return j.result;
+      };
+      window.ethereum = {
+        isMetaMask: true,
+        request: async ({ method, params }) => {
+          if (method === "eth_requestAccounts" || method === "eth_accounts") return [acct];
+          if (method.startsWith("wallet_")) return null;
+          return call(method, params);
+        },
+        on() {}, removeListener() {},
+      };
+    }, RPC, account);
+    await page.goto(base + "#/", { waitUntil: "networkidle0" });
+    return page;
+  }
+
+  async function act(page, selector, label) {
+    await page.bringToFront();
+    await page.evaluate(() => { document.querySelector("#toasts").innerHTML = ""; });
+    await page.waitForSelector(selector, { visible: true, timeout: 10000 });
+    await page.click(selector);
+    await page.waitForFunction(() => [...document.querySelectorAll(".toast")].some((t) => /done|went wrong|cancel|Not enough|can't|isn't|already/i.test(t.textContent)), { timeout: 20000 });
+    const text = await page.$$eval(".toast", (ts) => ts.map((t) => t.textContent).join(" | "));
+    check(text.includes("done"), `${label} → ${text.replace(/×/g, "").trim()}`);
+  }
+  // Hash-only goto is a same-document navigation, so force a real reload for fresh state.
+  const goCircle = async (page, id) => {
+    await page.bringToFront();
+    await page.goto("about:blank");
+    await page.goto(`${base}#/circle/${id}`, { waitUntil: "networkidle0" });
+    await page.waitForSelector(".members");
+  };
+
+  const [a, b, c] = [await openAs(accounts[0]), await openAs(accounts[1]), await openAs(accounts[2])];
+  await a.screenshot({ path: path.join(OUT, "1-home.png"), fullPage: true });
+
+  console.log("Create circle");
+  await a.bringToFront();
+  await a.click("#connect");
+  await a.waitForFunction(() => document.querySelector("#connect").textContent.includes("…"));
+  await a.click('[data-tab="create"]');
+  await a.type("#f-name", "E2E Chama");
+  await a.type("#f-amount", "1.5");
+  await a.select("#f-dur", "300");
+  await a.click("#add-me");
+  await a.type("#f-members", "\n" + accounts[1] + "\n" + accounts[2]);
+  const summary = await a.$eval("#summary", (e) => e.textContent);
+  check(summary.includes("3 members") && summary.includes("4.5 ETN"), `summary: ${summary.slice(0, 80)}…`);
+  await a.screenshot({ path: path.join(OUT, "2-create.png"), fullPage: true });
+  await act(a, "#create-form [type=submit]", "createCircle");
+  await a.waitForFunction(() => location.hash === "#/circle/0");
+  check(true, "navigated to new circle page");
+
+  console.log("Join");
+  for (const [i, p] of [a, b, c].entries()) { await goCircle(p, 0); await act(p, '[data-act="join"]', `member ${i + 1} join`); }
+  await goCircle(a, 0);
+  check((await a.$eval(".pill", (e) => e.textContent)) === "Active", "circle is Active after all joined");
+
+  for (let r = 0; r < 3; r++) {
+    console.log(`Round ${r + 1}`);
+    for (const [i, p] of [a, b, c].entries()) { await goCircle(p, 0); await act(p, '[data-act="pay"]', `member ${i + 1} pays`); }
+    if (r === 1) await c.screenshot({ path: path.join(OUT, "3-circle-active.png"), fullPage: true });
+    await goCircle(b, 0);
+    await act(b, '[data-act="settle"]', `settle round ${r + 1}`);
+  }
+  await goCircle(a, 0);
+  check((await a.$eval(".pill", (e) => e.textContent)) === "Completed", "circle Completed after 3 rounds");
+
+  console.log("Withdraw");
+  for (const [i, p] of [a, b, c].entries()) {
+    await p.bringToFront(); await p.goto("about:blank"); await p.goto(base + "#/", { waitUntil: "networkidle0" });
+    await p.waitForSelector('[data-act="withdraw"]', { timeout: 10000 });
+    const banner = await p.$eval(".banner.ok", (e) => e.textContent);
+    check(banner.includes("6 ETN"), `member ${i + 1} sees "${banner.match(/[\d.]+ ETN/)?.[0]}" to collect (expected 6 ETN = 4.5 pot + 1.5 deposit)`);
+    if (i === 0) await p.screenshot({ path: path.join(OUT, "4-home-withdraw.png"), fullPage: true });
+    await act(p, '[data-act="withdraw"]', `member ${i + 1} withdraw`);
+  }
+  check((await provider.getBalance(contract)) === 0n, "contract balance is 0 after all withdrawals");
+
+  console.log("Error handling");
+  await goCircle(a, 0);
+  check(!(await a.$('[data-act="pay"]')), "no Pay button on a completed circle");
+  const outsider = await openAs((await provider.send("eth_accounts", []))[5]);
+  await outsider.click('[data-tab="create"]');
+  await outsider.type("#f-name", "Bad");
+  await outsider.type("#f-amount", "abc");
+  await outsider.type("#f-members", "0x123");
+  await outsider.click("#create-form [type=submit]");
+  const err = await outsider.$eval("#form-err", (e) => e.textContent);
+  check(/valid address/.test(err) && /number/.test(err), `form validation: ${err}`);
+
+  check(consoleErrors.length === 0, `no browser console errors${consoleErrors.length ? ": " + consoleErrors.join(" | ") : ""}`);
+  await browser.close();
+  console.log(failures ? `\n${failures} check(s) failed` : "\nAll checks passed");
+  console.log(`Screenshots in ${OUT}`);
+}
+
+main().catch((e) => { console.error(e); failures++; }).finally(() => { cleanup(); process.exitCode = failures ? 1 : 0; setTimeout(() => process.exit(process.exitCode), 1500); });

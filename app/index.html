@@ -1,0 +1,604 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>ETN Savings Circles</title>
+<meta name="description" content="Rotating savings groups on Electroneum Smart Chain">
+<meta name="theme-color" content="#0b1220">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='12' fill='none' stroke='%2300c389' stroke-width='4'/%3E%3Ccircle cx='16' cy='4' r='3' fill='%2300c389'/%3E%3C/svg%3E">
+<style>
+  :root {
+    --bg: #f4f6f9; --surface: #ffffff; --surface-2: #eef1f5; --text: #0f172a; --muted: #5b6475;
+    --border: #dde2ea; --brand: #00a874; --brand-ink: #ffffff; --brand-soft: #e3f7ef;
+    --warn: #b45309; --warn-soft: #fef3c7; --danger: #c02626; --danger-soft: #fde8e8;
+    --info-soft: #e8eefc; --info: #2a4fb8; --shadow: 0 1px 2px rgba(15,23,42,.06), 0 4px 16px rgba(15,23,42,.05);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0b1220; --surface: #121a2b; --surface-2: #1a2338; --text: #e7ecf5; --muted: #95a0b5;
+      --border: #263049; --brand: #19d39b; --brand-ink: #062118; --brand-soft: #0f2e25;
+      --warn: #f5b84a; --warn-soft: #33270f; --danger: #f47272; --danger-soft: #3a1717;
+      --info-soft: #17223f; --info: #8fb0ff; --shadow: none;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body {
+    background: var(--bg); color: var(--text);
+    font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    -webkit-font-smoothing: antialiased; min-height: 100vh;
+  }
+  button, input, textarea, select { font: inherit; color: inherit; }
+  a { color: var(--brand); }
+  .wrap { max-width: 720px; margin: 0 auto; padding: 0 16px 96px; }
+
+  header { position: sticky; top: 0; z-index: 10; background: color-mix(in srgb, var(--bg) 88%, transparent);
+    backdrop-filter: blur(10px); border-bottom: 1px solid var(--border); }
+  .bar { max-width: 720px; margin: 0 auto; padding: 12px 16px; display: flex; align-items: center; gap: 12px; }
+  .logo { display: flex; align-items: center; gap: 8px; font-weight: 700; letter-spacing: -.01em; text-decoration: none; color: var(--text); }
+  .logo svg { width: 26px; height: 26px; }
+  .bar .spacer { flex: 1; }
+  .net { font-size: 12px; color: var(--muted); display: none; }
+  @media (min-width: 560px) { .net { display: inline; } }
+
+  .btn { appearance: none; border: 1px solid transparent; border-radius: 10px; padding: 10px 16px; font-weight: 600;
+    cursor: pointer; background: var(--brand); color: var(--brand-ink); transition: filter .15s, opacity .15s; white-space: nowrap; }
+  .btn:hover { filter: brightness(1.06); }
+  .btn:disabled { opacity: .5; cursor: not-allowed; }
+  .btn.secondary { background: var(--surface); color: var(--text); border-color: var(--border); }
+  .btn.danger { background: transparent; color: var(--danger); border-color: var(--danger); }
+  .btn.small { padding: 6px 12px; font-size: 13px; border-radius: 8px; }
+  .btn.block { width: 100%; }
+
+  .tabs { display: flex; gap: 4px; background: var(--surface-2); padding: 4px; border-radius: 12px; margin: 20px 0 16px; }
+  .tabs button { flex: 1; border: 0; background: transparent; padding: 8px 6px; border-radius: 9px; font-weight: 600; color: var(--muted); cursor: pointer; }
+  .tabs button[aria-selected="true"] { background: var(--surface); color: var(--text); box-shadow: var(--shadow); }
+
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; padding: 16px; box-shadow: var(--shadow); }
+  .card + .card { margin-top: 12px; }
+  .stack > * + * { margin-top: 12px; }
+
+  .banner { display: flex; align-items: center; gap: 12px; padding: 14px 16px; border-radius: 14px; margin-top: 16px; }
+  .banner.ok { background: var(--brand-soft); }
+  .banner.warn { background: var(--warn-soft); }
+  .banner.info { background: var(--info-soft); }
+  .banner .grow { flex: 1; min-width: 0; }
+  .banner strong { display: block; }
+
+  .hero { margin-top: 24px; }
+  .hero h1 { font-size: 26px; line-height: 1.2; margin: 0 0 8px; letter-spacing: -.02em; }
+  .hero p { margin: 0; color: var(--muted); }
+  .steps { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; margin-top: 16px; }
+  .steps div { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 12px; font-size: 13px; color: var(--muted); }
+  .steps b { display: block; color: var(--text); font-size: 14px; }
+
+  .circle-card { display: block; text-decoration: none; color: inherit; cursor: pointer; }
+  .circle-card:hover { border-color: var(--brand); }
+  .row { display: flex; align-items: center; gap: 8px; }
+  .between { justify-content: space-between; }
+  .title { font-weight: 700; font-size: 17px; margin: 0; overflow-wrap: anywhere; }
+  .muted { color: var(--muted); }
+  .small { font-size: 13px; }
+  .pill { display: inline-block; font-size: 12px; font-weight: 600; padding: 2px 10px; border-radius: 999px; white-space: nowrap; }
+  .pill.Forming { background: var(--info-soft); color: var(--info); }
+  .pill.Active { background: var(--brand-soft); color: var(--brand); }
+  .pill.Completed { background: var(--surface-2); color: var(--muted); }
+  .pill.Cancelled { background: var(--danger-soft); color: var(--danger); }
+  .pill.you { background: var(--warn-soft); color: var(--warn); }
+
+  .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 12px; }
+  .stat { background: var(--surface-2); border-radius: 10px; padding: 8px 10px; min-width: 0; }
+  .stat .k { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+  .stat .v { font-weight: 700; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+
+  .progress { height: 8px; background: var(--surface-2); border-radius: 99px; overflow: hidden; margin-top: 12px; }
+  .progress > i { display: block; height: 100%; background: var(--brand); border-radius: 99px; transition: width .3s; }
+
+  .members { list-style: none; padding: 0; margin: 0; }
+  .members li { display: flex; align-items: center; gap: 10px; padding: 10px 0; border-top: 1px solid var(--border); }
+  .members li:first-child { border-top: 0; }
+  .avatar { width: 32px; height: 32px; border-radius: 50%; flex: none; display: grid; place-items: center; font-size: 12px; font-weight: 700; color: #fff; }
+  .members .who { flex: 1; min-width: 0; }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; }
+  .tag { font-size: 12px; color: var(--muted); }
+  .check { font-size: 12px; font-weight: 600; white-space: nowrap; }
+  .check.ok { color: var(--brand); }
+  .check.no { color: var(--muted); }
+  .check.bad { color: var(--danger); }
+
+  label { display: block; font-weight: 600; font-size: 14px; margin-bottom: 6px; }
+  .hint { font-weight: 400; color: var(--muted); font-size: 13px; }
+  input, textarea, select { width: 100%; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; }
+  textarea { min-height: 120px; resize: vertical; }
+  textarea.mono { font-size: 11.5px; letter-spacing: -.01em; }
+  input:focus, textarea:focus, select:focus { outline: 2px solid var(--brand); outline-offset: -1px; border-color: transparent; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  @media (max-width: 420px) { .grid2 { grid-template-columns: 1fr; } }
+  .err { color: var(--danger); font-size: 13px; margin-top: 6px; }
+  .summary { background: var(--surface-2); border-radius: 12px; padding: 12px; font-size: 14px; }
+
+  .empty { text-align: center; padding: 32px 16px; color: var(--muted); }
+  .back { display: inline-flex; align-items: center; gap: 4px; margin: 20px 0 12px; color: var(--muted); text-decoration: none; font-weight: 600; }
+  .actions { display: flex; flex-wrap: wrap; gap: 8px; }
+  .actions .btn { flex: 1 1 200px; }
+
+  #toasts { position: fixed; left: 50%; transform: translateX(-50%); bottom: 16px; width: min(560px, calc(100% - 32px)); z-index: 50; display: flex; flex-direction: column; gap: 8px; }
+  .toast { background: var(--text); color: var(--bg); border-radius: 12px; padding: 12px 14px; font-size: 14px; box-shadow: 0 8px 24px rgba(0,0,0,.2); display: flex; gap: 10px; align-items: flex-start; }
+  .toast a { color: inherit; font-weight: 600; }
+  .toast.error { background: var(--danger); color: #fff; }
+  .toast .x { margin-left: auto; background: none; border: 0; color: inherit; cursor: pointer; font-size: 16px; line-height: 1; padding: 0 2px; }
+  .spin { width: 14px; height: 14px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: spin .8s linear infinite; flex: none; margin-top: 3px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .skeleton { height: 110px; border-radius: 16px; background: linear-gradient(90deg, var(--surface-2), var(--surface), var(--surface-2)); background-size: 200% 100%; animation: sk 1.2s infinite; }
+  .skeleton + .skeleton { margin-top: 12px; }
+  @keyframes sk { to { background-position: -200% 0; } }
+  footer { text-align: center; color: var(--muted); font-size: 12px; margin-top: 40px; }
+</style>
+</head>
+<body>
+<header>
+  <div class="bar">
+    <a class="logo" href="#/">
+      <svg viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="11" fill="none" stroke="var(--brand)" stroke-width="3.5"/><circle cx="16" cy="5" r="3.2" fill="var(--brand)"/><circle cx="26.5" cy="20" r="2.4" fill="var(--brand)" opacity=".6"/><circle cx="6" cy="21" r="2.4" fill="var(--brand)" opacity=".6"/></svg>
+      Savings Circles
+    </a>
+    <span class="spacer"></span>
+    <span class="net" id="net"></span>
+    <button class="btn small" id="connect">Connect wallet</button>
+  </div>
+</header>
+
+<main class="wrap">
+  <div id="banners"></div>
+  <div id="view"></div>
+  <footer>
+    Smart contract <a id="contract-link" target="_blank" rel="noopener"></a> · non-custodial, no fees, no admin key
+  </footer>
+</main>
+<div id="toasts" aria-live="polite"></div>
+
+<script type="module">
+import { ethers } from "./vendor/ethers.min.js";
+import { getConfig } from "./config.js";
+
+const CFG = getConfig();
+const ABI = [
+  "function circleCount() view returns (uint256)",
+  "function withdrawable(address) view returns (uint256)",
+  "function createCircle(string name, address[] members, uint128 contribution, uint64 roundDuration) returns (uint256)",
+  "function join(uint256 id) payable",
+  "function cancelForming(uint256 id)",
+  "function contribute(uint256 id) payable",
+  "function settleRound(uint256 id)",
+  "function withdraw()",
+  "function getCircle(uint256 id) view returns (address creator, string name, uint256 contribution, uint64 roundDuration, uint64 roundDeadline, uint32 round, uint32 joinedCount, uint32 paidCount, uint8 status, address[] members)",
+  "function getMember(uint256 id, address member) view returns (bool invited, bool joined, bool depositUsed, uint32 defaults, bool paidThisRound)",
+  "event CircleCreated(uint256 indexed id, address indexed creator, string name, uint256 contribution, uint64 roundDuration, address[] members)",
+  "error InvalidMemberCount()", "error InvalidContribution()", "error InvalidDuration()", "error EmptyName()",
+  "error DuplicateMember(address member)", "error ZeroAddressMember()", "error UnknownCircle()", "error WrongStatus()",
+  "error NotInvited()", "error AlreadyJoined()", "error WrongAmount()", "error NotCreator()", "error AlreadyPaid()",
+  "error RoundClosed()", "error RoundStillOpen()", "error NothingToWithdraw()", "error TransferFailed()", "error Reentrancy()",
+];
+const ERROR_TEXT = {
+  InvalidMemberCount: "A circle needs between 2 and 50 members.",
+  InvalidContribution: "Contribution must be more than 0.",
+  InvalidDuration: "Round length must be between 1 minute and 1 year.",
+  EmptyName: "Give the circle a name.",
+  DuplicateMember: "The same address is listed twice.",
+  ZeroAddressMember: "One of the addresses is the zero address.",
+  UnknownCircle: "That circle doesn't exist.",
+  WrongStatus: "The circle isn't in the right state for that. Refresh and try again.",
+  NotInvited: "Your wallet isn't a member of this circle.",
+  AlreadyJoined: "You have already joined.",
+  WrongAmount: "Wrong amount sent.",
+  NotCreator: "Only the circle creator can do that.",
+  AlreadyPaid: "You have already paid this round.",
+  RoundClosed: "This round's deadline has passed. Settle the round first.",
+  RoundStillOpen: "The round can't be settled until everyone pays or the deadline passes.",
+  NothingToWithdraw: "Nothing to withdraw.",
+  TransferFailed: "The transfer failed.",
+};
+const STATUS = ["Forming", "Active", "Completed", "Cancelled"];
+const DURATIONS = [
+  [300, "5 minutes (demo)"], [3600, "1 hour"], [86400, "1 day"], [604800, "1 week"],
+  [1209600, "2 weeks"], [2592000, "30 days"],
+];
+
+const readProvider = new ethers.JsonRpcProvider(CFG.rpc, CFG.chainId, { staticNetwork: true });
+const reader = new ethers.Contract(CFG.contract, ABI, readProvider);
+const iface = reader.interface;
+
+const state = { account: null, signer: null, chainOk: false, balance: 0n, withdrawable: 0n, tab: "mine", circles: null };
+const $ = (s) => document.querySelector(s);
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const short = (a) => `${a.slice(0, 6)}…${a.slice(-4)}`;
+const same = (a, b) => a && b && a.toLowerCase() === b.toLowerCase();
+const fmt = (wei) => { const s = ethers.formatEther(wei); const [i, d = ""] = s.split("."); const dd = d.replace(/0+$/, "").slice(0, 4); return (dd ? `${Number(i).toLocaleString()}.${dd}` : Number(i).toLocaleString()) + " ETN"; };
+const now = () => Math.floor(Date.now() / 1000);
+const txUrl = (h) => `${CFG.explorer}/tx/${h}`;
+const addrUrl = (a) => `${CFG.explorer}/address/${a}`;
+function avatarColor(addr) { const h = parseInt(addr.slice(2, 8), 16) % 360; return `hsl(${h} 55% 45%)`; }
+function humanDuration(sec) {
+  const hit = DURATIONS.find(([s]) => s === sec); if (hit) return hit[1].replace(" (demo)", "");
+  if (sec % 86400 === 0) return `${sec / 86400} days`; if (sec % 3600 === 0) return `${sec / 3600} hours`; return `${Math.round(sec / 60)} min`;
+}
+function countdown(ts) {
+  let d = ts - now(); if (d <= 0) return "deadline passed";
+  const days = Math.floor(d / 86400); d %= 86400; const h = Math.floor(d / 3600); d %= 3600; const m = Math.floor(d / 60); const s = d % 60;
+  if (days) return `${days}d ${h}h left`; if (h) return `${h}h ${m}m left`; return `${m}m ${String(s).padStart(2, "0")}s left`;
+}
+
+// ---------------------------------------------------------------- toasts & errors
+function toast(html, { kind = "", spin = false, ttl = 6000 } = {}) {
+  const el = document.createElement("div");
+  el.className = `toast ${kind}`;
+  el.innerHTML = `${spin ? '<span class="spin"></span>' : ""}<div>${html}</div><button class="x" aria-label="Dismiss">×</button>`;
+  el.querySelector(".x").onclick = () => el.remove();
+  $("#toasts").append(el);
+  if (ttl) setTimeout(() => el.remove(), ttl);
+  return el;
+}
+function friendlyError(e) {
+  if (e?.code === "ACTION_REJECTED" || e?.code === 4001 || e?.info?.error?.code === 4001) return "You cancelled the request in your wallet.";
+  if (e?.code === "INSUFFICIENT_FUNDS") return "Not enough ETN in your wallet to cover this and the network fee.";
+  let name = e?.revert?.name;
+  if (!name) {
+    const data = e?.data ?? e?.info?.error?.data ?? e?.error?.data;
+    const hex = typeof data === "string" ? data : data?.data;
+    if (hex) { try { name = iface.parseError(hex)?.name; } catch {} }
+  }
+  if (name && ERROR_TEXT[name]) return ERROR_TEXT[name];
+  return e?.shortMessage || e?.message || "Something went wrong.";
+}
+async function sendTx(label, fn) {
+  if (!state.signer) { await connect(); if (!state.signer) return false; }
+  const pending = toast(`${esc(label)}: confirm in your wallet…`, { spin: true, ttl: 0 });
+  try {
+    const tx = await fn(new ethers.Contract(CFG.contract, ABI, state.signer));
+    pending.querySelector("div").innerHTML = `${esc(label)}: confirming on-chain… <a href="${txUrl(tx.hash)}" target="_blank" rel="noopener">view</a>`;
+    const receipt = await tx.wait();
+    pending.remove();
+    toast(`✓ ${esc(label)} done. <a href="${txUrl(tx.hash)}" target="_blank" rel="noopener">View transaction</a>`, { ttl: 8000 });
+    await refreshAccount();
+    return receipt;
+  } catch (e) {
+    pending.remove();
+    console.error(e);
+    toast(esc(friendlyError(e)), { kind: "error", ttl: 9000 });
+    return false;
+  }
+}
+
+// ---------------------------------------------------------------- wallet
+const CHAIN_HEX = "0x" + CFG.chainId.toString(16);
+async function ensureChain() {
+  const current = await window.ethereum.request({ method: "eth_chainId" });
+  if (parseInt(current, 16) === CFG.chainId) return true;
+  try {
+    await window.ethereum.request({ method: "wallet_switchEthereumChain", params: [{ chainId: CHAIN_HEX }] });
+  } catch (e) {
+    if (e?.code === 4902 || e?.data?.originalError?.code === 4902) {
+      await window.ethereum.request({ method: "wallet_addEthereumChain", params: [{
+        chainId: CHAIN_HEX, chainName: CFG.name, rpcUrls: [CFG.rpc],
+        nativeCurrency: { name: "Electroneum", symbol: "ETN", decimals: 18 }, blockExplorerUrls: [CFG.explorer],
+      }] });
+    } else throw e;
+  }
+  return parseInt(await window.ethereum.request({ method: "eth_chainId" }), 16) === CFG.chainId;
+}
+async function connect() {
+  if (!window.ethereum) {
+    toast(`No wallet found. Install <a href="https://metamask.io/download/" target="_blank" rel="noopener">MetaMask</a>, or open this page in your wallet app's browser.`, { kind: "error", ttl: 10000 });
+    return;
+  }
+  try {
+    await window.ethereum.request({ method: "eth_requestAccounts" });
+    await syncWallet(true);
+  } catch (e) { toast(esc(friendlyError(e)), { kind: "error" }); }
+}
+async function syncWallet(switchChain = false) {
+  if (!window.ethereum) return;
+  const accounts = await window.ethereum.request({ method: "eth_accounts" });
+  if (!accounts.length) { Object.assign(state, { account: null, signer: null, chainOk: false }); return render(); }
+  if (switchChain) { try { await ensureChain(); } catch (e) { toast(esc(friendlyError(e)), { kind: "error" }); } }
+  const chainId = parseInt(await window.ethereum.request({ method: "eth_chainId" }), 16);
+  state.chainOk = chainId === CFG.chainId;
+  const bp = new ethers.BrowserProvider(window.ethereum, "any");
+  state.account = ethers.getAddress(accounts[0]);
+  state.signer = state.chainOk ? await bp.getSigner(state.account) : null;
+  await refreshAccount();
+}
+async function refreshAccount() {
+  if (state.account) {
+    [state.balance, state.withdrawable] = await Promise.all([
+      readProvider.getBalance(state.account), reader.withdrawable(state.account),
+    ]).catch(() => [state.balance, state.withdrawable]);
+  }
+  state.circles = null;
+  await route();
+}
+if (window.ethereum?.on) {
+  window.ethereum.on("accountsChanged", () => syncWallet());
+  window.ethereum.on("chainChanged", () => syncWallet());
+}
+
+// ---------------------------------------------------------------- data
+async function loadCircle(id) {
+  const c = await reader.getCircle(id);
+  const addrs = [...c.members];
+  const ms = await Promise.all(addrs.map((a) => reader.getMember(id, a)));
+  return {
+    id, creator: c.creator, name: c.name, contribution: c.contribution, roundDuration: Number(c.roundDuration),
+    deadline: Number(c.roundDeadline), round: Number(c.round), joined: Number(c.joinedCount), paid: Number(c.paidCount),
+    status: STATUS[Number(c.status)],
+    members: addrs.map((a, i) => ({ address: a, joined: ms[i].joined, depositUsed: ms[i].depositUsed, defaults: Number(ms[i].defaults), paid: ms[i].paidThisRound })),
+  };
+}
+async function loadCircles() {
+  const count = Number(await reader.circleCount());
+  const ids = []; for (let i = count - 1; i >= Math.max(0, count - 40); i--) ids.push(i);
+  return Promise.all(ids.map(loadCircle));
+}
+
+// ---------------------------------------------------------------- views
+function render() {
+  const btn = $("#connect");
+  btn.textContent = state.account ? short(state.account) : "Connect wallet";
+  btn.className = state.account ? "btn small secondary" : "btn small";
+  $("#net").textContent = CFG.name;
+  const link = $("#contract-link"); link.href = addrUrl(CFG.contract); link.textContent = short(CFG.contract);
+
+  let b = "";
+  if (state.account && !state.chainOk) {
+    b += `<div class="banner warn"><div class="grow"><strong>Wrong network</strong><span class="small">Switch your wallet to ${esc(CFG.name)} to continue.</span></div><button class="btn small" data-act="switch">Switch</button></div>`;
+  } else if (state.account && state.balance === 0n && CFG.faucet) {
+    b += `<div class="banner info"><div class="grow"><strong>Your wallet has no ETN</strong><span class="small">Get free testnet ETN to try circles out.</span></div><a class="btn small" href="${CFG.faucet}" target="_blank" rel="noopener">Faucet</a></div>`;
+  }
+  if (state.withdrawable > 0n) {
+    b += `<div class="banner ok"><div class="grow"><strong>${fmt(state.withdrawable)} ready to collect</strong><span class="small">Payouts and refunds from your circles.</span></div><button class="btn small" data-act="withdraw">Withdraw</button></div>`;
+  }
+  $("#banners").innerHTML = b;
+}
+
+function circleCard(c) {
+  const mine = state.account && c.members.some((m) => same(m.address, state.account));
+  const n = c.members.length;
+  let progressPct, line;
+  if (c.status === "Forming") { progressPct = (c.joined / n) * 100; line = `${c.joined} of ${n} joined`; }
+  else if (c.status === "Active") { progressPct = (c.round / n) * 100; line = `Round ${c.round + 1} of ${n} · ${c.paid}/${n} paid · ${countdown(c.deadline)}`; }
+  else if (c.status === "Completed") { progressPct = 100; line = `All ${n} rounds paid out`; }
+  else { progressPct = (c.round / n) * 100; line = "Circle dissolved, funds refunded"; }
+  return `<a class="card circle-card" href="#/circle/${c.id}">
+    <div class="row between"><p class="title">${esc(c.name)}</p><span class="row">${mine ? '<span class="pill you">You’re in</span>' : ""}<span class="pill ${c.status}">${c.status}</span></span></div>
+    <div class="stats">
+      <div class="stat"><div class="k">Per round</div><div class="v">${fmt(c.contribution)}</div></div>
+      <div class="stat"><div class="k">Pot</div><div class="v">${fmt(c.contribution * BigInt(n))}</div></div>
+      <div class="stat"><div class="k">Every</div><div class="v">${humanDuration(c.roundDuration)}</div></div>
+    </div>
+    <div class="progress"><i style="width:${progressPct}%"></i></div>
+    <div class="small muted" style="margin-top:8px" data-countdown="${c.status === "Active" ? c.id : ""}">${line}</div>
+  </a>`;
+}
+
+async function viewHome() {
+  const view = $("#view");
+  view.innerHTML = `
+    <section class="hero">
+      <h1>Save together. Get paid out in turn.</h1>
+      <p>A savings circle (chama, susu, tontine) on Electroneum Smart Chain. Everyone pays the same amount each round, and one member receives the whole pot each time. The smart contract holds the money, so nobody has to.</p>
+      <div class="steps">
+        <div><b>1 · Create</b>Choose members, an amount and how often.</div>
+        <div><b>2 · Join</b>Each member locks a one-round deposit.</div>
+        <div><b>3 · Pay</b>Everyone pays each round. The pot rotates.</div>
+        <div><b>4 · Collect</b>Get the pot on your turn and your deposit back at the end.</div>
+      </div>
+    </section>
+    <div class="tabs" role="tablist">
+      <button role="tab" data-tab="mine" aria-selected="${state.tab === "mine"}">My circles</button>
+      <button role="tab" data-tab="all" aria-selected="${state.tab === "all"}">All circles</button>
+      <button role="tab" data-tab="create" aria-selected="${state.tab === "create"}">+ New</button>
+    </div>
+    <div id="tab"></div>`;
+  view.querySelectorAll("[data-tab]").forEach((b) => b.onclick = () => { state.tab = b.dataset.tab; viewHome(); });
+  const tab = $("#tab");
+  if (state.tab === "create") return viewCreate(tab);
+
+  if (!state.circles) {
+    tab.innerHTML = '<div class="skeleton"></div><div class="skeleton"></div>';
+    try { state.circles = await loadCircles(); }
+    catch (e) { console.error(e); tab.innerHTML = `<div class="card empty">Couldn't load circles from the network. <button class="btn small secondary" data-act="reload">Retry</button></div>`; return; }
+    if (location.hash.replace(/^#\/?/, "") !== "" || state.tab === "create") return; // navigated away meanwhile
+  }
+  let list = state.circles;
+  if (state.tab === "mine") {
+    if (!state.account) { tab.innerHTML = `<div class="card empty"><p>Connect your wallet to see your circles.</p><button class="btn" data-act="connect">Connect wallet</button></div>`; return; }
+    list = list.filter((c) => c.members.some((m) => same(m.address, state.account)) || same(c.creator, state.account));
+  }
+  tab.innerHTML = list.length ? list.map(circleCard).join("")
+    : `<div class="card empty"><p>${state.tab === "mine" ? "You aren't in any circles yet." : "No circles yet."}</p><button class="btn" data-goto="create">Start a circle</button></div>`;
+}
+
+function viewCreate(el) {
+  el.innerHTML = `<form class="card stack" id="create-form" novalidate>
+    <div><label for="f-name">Circle name</label><input id="f-name" maxlength="60" placeholder="e.g. Kibera Market Chama" required></div>
+    <div class="grid2">
+      <div><label for="f-amount">Contribution per round <span class="hint">(ETN)</span></label><input id="f-amount" inputmode="decimal" placeholder="10" required></div>
+      <div><label for="f-dur">Round length</label><select id="f-dur">${DURATIONS.map(([s, l]) => `<option value="${s}" ${s === 604800 ? "selected" : ""}>${l}</option>`).join("")}</select></div>
+    </div>
+    <div>
+      <label for="f-members">Members, in payout order <span class="hint">· one wallet address per line. The first member is paid in round 1.</span></label>
+      <textarea id="f-members" class="mono" placeholder="0x…&#10;0x…&#10;0x…" spellcheck="false"></textarea>
+      <div class="row" style="margin-top:8px"><button type="button" class="btn small secondary" id="add-me">+ Add my address</button></div>
+    </div>
+    <div class="summary" id="summary">Fill in the details to see a summary.</div>
+    <div class="err" id="form-err" hidden></div>
+    <button class="btn block" type="submit">Create circle</button>
+  </form>`;
+  const form = $("#create-form");
+  const parse = () => {
+    const name = $("#f-name").value.trim();
+    const raw = $("#f-members").value.split(/[\s,;]+/).map((s) => s.trim()).filter(Boolean);
+    const errors = [];
+    const members = [];
+    for (const a of raw) {
+      if (!ethers.isAddress(a)) { errors.push(`Not a valid address: ${a.slice(0, 14)}${a.length > 14 ? "…" : ""}`); continue; }
+      const ck = ethers.getAddress(a);
+      if (members.some((m) => m === ck)) { errors.push(`Listed twice: ${short(ck)}`); continue; }
+      members.push(ck);
+    }
+    let amount = null;
+    try { const v = $("#f-amount").value.trim(); if (v) amount = ethers.parseEther(v); } catch { errors.push("Contribution must be a number, e.g. 10 or 2.5"); }
+    if (amount !== null && amount <= 0n) errors.push("Contribution must be more than 0.");
+    return { name, members, amount, duration: Number($("#f-dur").value), errors };
+  };
+  const update = () => {
+    const p = parse();
+    if (!p.amount || p.members.length < 2) { $("#summary").textContent = "Add an amount and at least 2 members to see a summary."; return p; }
+    const n = p.members.length;
+    $("#summary").innerHTML = `<b>${n} members × ${fmt(p.amount)}</b> every ${humanDuration(p.duration)}. Each round's pot is <b>${fmt(p.amount * BigInt(n))}</b>. It runs for ${n} rounds (about ${humanDuration(p.duration * n)}). Each member locks a ${fmt(p.amount)} deposit when joining, and gets it back at the end.`;
+    return p;
+  };
+  form.oninput = update;
+  $("#add-me").onclick = async () => {
+    if (!state.account) await connect();
+    if (!state.account) return;
+    const ta = $("#f-members");
+    if (!ta.value.toLowerCase().includes(state.account.toLowerCase())) ta.value = (ta.value.trim() ? ta.value.trim() + "\n" : "") + state.account;
+    update();
+  };
+  form.onsubmit = async (ev) => {
+    ev.preventDefault();
+    const p = update();
+    const errs = [...p.errors];
+    if (!p.name) errs.unshift("Give the circle a name.");
+    if (!p.amount && !$("#f-amount").value.trim()) errs.push("Enter a contribution amount.");
+    if (p.members.length < 2 || p.members.length > 50) errs.push("Add between 2 and 50 members.");
+    const errEl = $("#form-err");
+    if (errs.length) { errEl.hidden = false; errEl.innerHTML = errs.map(esc).join("<br>"); return; }
+    errEl.hidden = true;
+    const btn = form.querySelector("[type=submit]"); btn.disabled = true;
+    const receipt = await sendTx("Create circle", (c) => c.createCircle(p.name, p.members, p.amount, p.duration));
+    btn.disabled = false;
+    if (receipt) {
+      const ev2 = receipt.logs.map((l) => { try { return iface.parseLog(l); } catch { return null; } }).find((x) => x?.name === "CircleCreated");
+      state.tab = "mine";
+      location.hash = ev2 ? `#/circle/${ev2.args.id}` : "#/";
+    }
+  };
+}
+
+async function viewCircle(id) {
+  const view = $("#view");
+  view.innerHTML = `<a class="back" href="#/">← All circles</a><div class="skeleton"></div><div class="skeleton"></div>`;
+  let c;
+  try {
+    const count = Number(await reader.circleCount());
+    if (!(id >= 0 && id < count)) { view.innerHTML = `<a class="back" href="#/">← All circles</a><div class="card empty">Circle #${esc(id)} doesn't exist.</div>`; return; }
+    c = await loadCircle(id);
+  } catch (e) { console.error(e); view.innerHTML = `<a class="back" href="#/">← All circles</a><div class="card empty">Couldn't load this circle. <button class="btn small secondary" data-act="reload">Retry</button></div>`; return; }
+  if (location.hash !== `#/circle/${id}`) return;
+
+  const n = c.members.length;
+  const me = state.account && c.members.find((m) => same(m.address, state.account));
+  const isCreator = same(c.creator, state.account);
+  const due = c.status === "Active" && (c.paid === n || now() >= c.deadline);
+  const recipient = c.status === "Active" ? c.members[c.round].address : null;
+
+  const actions = [];
+  let note = "";
+  if (c.status === "Forming") {
+    if (me && !me.joined) actions.push(`<button class="btn" data-act="join" data-id="${id}" data-amt="${c.contribution}">Join · lock ${fmt(c.contribution)} deposit</button>`);
+    if (isCreator) actions.push(`<button class="btn danger" data-act="cancel" data-id="${id}">Cancel circle</button>`);
+    note = me?.joined ? "You've joined. The circle starts as soon as every member has joined." : me ? "You've been invited. Join by locking a deposit of one contribution. You get it back at the end." : "Waiting for all members to join.";
+  } else if (c.status === "Active") {
+    if (me && !me.paid && !due) actions.push(`<button class="btn" data-act="pay" data-id="${id}" data-amt="${c.contribution}">Pay ${fmt(c.contribution)} for round ${c.round + 1}</button>`);
+    if (due) actions.push(`<button class="btn ${me && !me.paid && c.paid !== n ? "secondary" : ""}" data-act="settle" data-id="${id}">Settle round ${c.round + 1}</button>`);
+    if (due && c.paid !== n) note = "The deadline has passed. Anyone can settle the round: missed payments are covered from deposits, and a repeat miss dissolves the circle with refunds.";
+    else if (due) note = `Everyone has paid. Settle the round to send the pot to ${short(recipient)}.`;
+    else if (me?.paid) note = "You've paid this round. ✓";
+    else if (me) note = `Pay before the deadline. If you miss it, your deposit covers the payment once.`;
+  } else if (c.status === "Completed") note = "This circle is finished. Every member received the pot, and unused deposits were returned.";
+  else note = "This circle was cancelled or dissolved. Refunds were credited to members. Collect them with Withdraw.";
+
+  const memberRows = c.members.map((m, i) => {
+    let st;
+    if (c.status === "Forming") st = m.joined ? '<span class="check ok">Joined ✓</span>' : '<span class="check no">Not joined</span>';
+    else if (c.status === "Active") st = i < c.round ? '<span class="check ok">Received pot</span>' : m.paid ? '<span class="check ok">Paid ✓</span>' : '<span class="check no">Not paid yet</span>';
+    else st = i < c.round || c.status === "Completed" ? '<span class="check ok">Received pot</span>' : '<span class="check no">—</span>';
+    const tags = [];
+    if (same(m.address, state.account)) tags.push("you");
+    if (same(m.address, c.creator)) tags.push("creator");
+    if (recipient && i === c.round) tags.push("receives this round");
+    if (m.depositUsed) tags.push(`<span class="check bad">missed ${m.defaults}×, deposit used</span>`);
+    return `<li><span class="avatar" style="background:${avatarColor(m.address)}">${i + 1}</span>
+      <div class="who"><a class="mono" href="${addrUrl(m.address)}" target="_blank" rel="noopener">${short(m.address)}</a><div class="tag">${tags.join(" · ")}</div></div>${st}</li>`;
+  }).join("");
+
+  view.innerHTML = `<a class="back" href="#/">← All circles</a>
+    <div class="card">
+      <div class="row between"><p class="title">${esc(c.name)}</p><span class="pill ${c.status}">${c.status}</span></div>
+      <div class="small muted">Circle #${id} · created by <a href="${addrUrl(c.creator)}" target="_blank" rel="noopener">${short(c.creator)}</a></div>
+      <div class="stats">
+        <div class="stat"><div class="k">Per round</div><div class="v">${fmt(c.contribution)}</div></div>
+        <div class="stat"><div class="k">Pot</div><div class="v">${fmt(c.contribution * BigInt(n))}</div></div>
+        <div class="stat"><div class="k">Every</div><div class="v">${humanDuration(c.roundDuration)}</div></div>
+      </div>
+      ${c.status === "Active" ? `<div class="stats" style="grid-template-columns:1fr 1fr">
+        <div class="stat"><div class="k">Round</div><div class="v">${c.round + 1} of ${n}</div></div>
+        <div class="stat"><div class="k">Deadline</div><div class="v" data-countdown="${id}" data-deadline="${c.deadline}">${countdown(c.deadline)}</div></div></div>
+        <div class="progress"><i style="width:${(c.paid / n) * 100}%"></i></div><div class="small muted" style="margin-top:6px">${c.paid} of ${n} paid this round</div>` : ""}
+    </div>
+    ${note || actions.length ? `<div class="card stack">${note ? `<div class="small">${note}</div>` : ""}${actions.length ? `<div class="actions">${actions.join("")}</div>` : ""}
+      ${!state.account && c.status !== "Completed" && c.status !== "Cancelled" ? '<button class="btn block" data-act="connect">Connect wallet to take part</button>' : ""}</div>` : ""}
+    <div class="card"><div class="row between" style="margin-bottom:4px"><b>Members & payout order</b><button class="btn small secondary" data-act="share" data-id="${id}">Share link</button></div><ul class="members">${memberRows}</ul></div>`;
+}
+
+// ---------------------------------------------------------------- routing & events
+async function route() {
+  render();
+  const m = location.hash.match(/^#\/circle\/(\d+)$/);
+  if (m) return viewCircle(Number(m[1]));
+  if (location.hash.startsWith("#/new")) state.tab = "create";
+  return viewHome();
+}
+window.addEventListener("hashchange", () => { window.scrollTo(0, 0); route(); });
+
+document.addEventListener("click", async (ev) => {
+  const goto = ev.target.closest("[data-goto]");
+  if (goto) { state.tab = goto.dataset.goto; location.hash = "#/"; return viewHome(); }
+  const el = ev.target.closest("[data-act]");
+  if (!el) return;
+  const id = el.dataset.id !== undefined ? BigInt(el.dataset.id) : null;
+  const amt = el.dataset.amt ? BigInt(el.dataset.amt) : 0n;
+  el.disabled = true;
+  try {
+    switch (el.dataset.act) {
+      case "connect": await connect(); break;
+      case "switch": await syncWallet(true); break;
+      case "reload": state.circles = null; await route(); break;
+      case "withdraw": await sendTx("Withdraw", (c) => c.withdraw()); break;
+      case "join": await sendTx("Join circle", (c) => c.join(id, { value: amt })); break;
+      case "pay": await sendTx("Pay contribution", (c) => c.contribute(id, { value: amt })); break;
+      case "settle": await sendTx("Settle round", (c) => c.settleRound(id)); break;
+      case "cancel": if (confirm("Cancel this circle? Everyone who joined gets their deposit back.")) await sendTx("Cancel circle", (c) => c.cancelForming(id)); break;
+      case "share": {
+        const url = location.href.split("#")[0] + `#/circle/${id}`;
+        try { if (navigator.share) await navigator.share({ title: "Join my savings circle", url }); else { await navigator.clipboard.writeText(url); toast("Link copied ✓"); } }
+        catch { /* user dismissed share sheet */ }
+        break;
+      }
+    }
+  } finally { el.disabled = false; }
+});
+$("#connect").onclick = () => connect();
+
+setInterval(() => {
+  document.querySelectorAll("[data-deadline]").forEach((el) => el.textContent = countdown(Number(el.dataset.deadline)));
+}, 1000);
+
+route();
+syncWallet().catch(() => {});
+</script>
+</body>
+</html>
