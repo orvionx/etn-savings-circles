@@ -1,15 +1,17 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-/// @title ETN Savings Circles
+/// @title ETN Savings Circles (v2)
 /// @notice On-chain rotating savings and credit associations (ROSCAs, also known as
 ///         chamas, susus, tontines or stokvels) using native ETN.
 ///
 /// How it works:
-///  1. A creator sets up a circle: an ordered member list (the payout order), a fixed
-///     contribution amount and a round length.
-///  2. Every invited member joins by locking a security deposit equal to one contribution.
-///     The circle starts once all members have joined.
+///  1. A creator sets up a circle with a fixed contribution and round length, either
+///     - invite-only: an ordered member list (the payout order), or
+///     - open: a number of seats that anyone can fill; payout order is join order.
+///  2. Members join by locking a security deposit equal to one contribution, with an
+///     optional nickname. Before the circle starts a member can leave and get the
+///     deposit back. The circle starts once every seat is filled.
 ///  3. Each round, every member contributes. When everyone has paid (or the round
 ///     deadline passes), anyone can settle the round and the whole pot is credited to
 ///     that round's recipient.
@@ -28,35 +30,47 @@ contract SavingsCircles {
         uint64 roundDuration;
         uint64 roundDeadline;
         uint32 round;       // index of the current round (0-based)
+        uint32 size;        // number of seats
         uint32 joinedCount;
         uint32 paidCount;   // members who paid in the current round
         Status status;
+        bool open;          // anyone may join (payout order = join order)
         string name;
-        address[] members;  // payout order
+        address[] members;  // payout order (open circles: joined members only)
     }
 
     struct MemberState {
-        bool invited;
+        bool invited;       // listed member (invite-only) or seated member (open)
         bool joined;
         bool depositUsed;
         uint32 defaults;
         uint32 lastPaidRound; // round index + 1 of the last round paid (0 = never)
+        string nickname;
     }
 
     uint256 public constant MIN_MEMBERS = 2;
     uint256 public constant MAX_MEMBERS = 50;
+    uint256 public constant MAX_NAME_LENGTH = 64;
+    uint256 public constant MAX_NICKNAME_LENGTH = 32;
     uint64 public constant MIN_ROUND_DURATION = 1 minutes;
     uint64 public constant MAX_ROUND_DURATION = 365 days;
 
     uint256 public circleCount;
+    uint256 public totalPaidOut;
+    uint256 public roundsSettled;
+    uint256 public circlesCompleted;
+
     mapping(uint256 => Circle) private circles;
     mapping(uint256 => mapping(address => MemberState)) private memberStates;
+    mapping(address => uint256[]) private userCircles;
     mapping(address => uint256) public withdrawable;
 
     uint256 private locked = 1;
 
-    event CircleCreated(uint256 indexed id, address indexed creator, string name, uint256 contribution, uint64 roundDuration, address[] members);
-    event MemberJoined(uint256 indexed id, address indexed member);
+    event CircleCreated(uint256 indexed id, address indexed creator, string name, bool open, uint32 size, uint256 contribution, uint64 roundDuration);
+    event MemberJoined(uint256 indexed id, address indexed member, string nickname);
+    event MemberLeft(uint256 indexed id, address indexed member);
+    event NicknameSet(uint256 indexed id, address indexed member, string nickname);
     event CircleStarted(uint256 indexed id, uint64 firstDeadline);
     event Contributed(uint256 indexed id, uint32 indexed round, address indexed member);
     event DepositUsed(uint256 indexed id, uint32 indexed round, address indexed member);
@@ -68,12 +82,14 @@ contract SavingsCircles {
     error InvalidMemberCount();
     error InvalidContribution();
     error InvalidDuration();
-    error EmptyName();
+    error InvalidName();
+    error NicknameTooLong();
     error DuplicateMember(address member);
     error ZeroAddressMember();
     error UnknownCircle();
     error WrongStatus();
     error NotInvited();
+    error NotMember();
     error AlreadyJoined();
     error WrongAmount();
     error NotCreator();
@@ -93,23 +109,16 @@ contract SavingsCircles {
 
     // ---------------------------------------------------------------- setup
 
+    /// @notice Create an invite-only circle. `members` is the payout order.
     function createCircle(
         string calldata name,
         address[] calldata members,
         uint128 contribution,
         uint64 roundDuration
     ) external returns (uint256 id) {
-        if (bytes(name).length == 0) revert EmptyName();
         if (members.length < MIN_MEMBERS || members.length > MAX_MEMBERS) revert InvalidMemberCount();
-        if (contribution == 0) revert InvalidContribution();
-        if (roundDuration < MIN_ROUND_DURATION || roundDuration > MAX_ROUND_DURATION) revert InvalidDuration();
-
-        id = circleCount++;
-        Circle storage c = circles[id];
-        c.creator = msg.sender;
-        c.name = name;
-        c.contribution = contribution;
-        c.roundDuration = roundDuration;
+        Circle storage c;
+        (id, c) = _init(name, uint32(members.length), false, contribution, roundDuration);
 
         for (uint256 i; i < members.length; ++i) {
             address m = members[i];
@@ -118,28 +127,73 @@ contract SavingsCircles {
             if (s.invited) revert DuplicateMember(m);
             s.invited = true;
             c.members.push(m);
+            if (m != msg.sender) userCircles[m].push(id);
         }
+    }
 
-        emit CircleCreated(id, msg.sender, name, contribution, roundDuration, members);
+    /// @notice Create an open circle with `size` seats. Anyone may join; payout order is join order.
+    function createOpenCircle(
+        string calldata name,
+        uint32 size,
+        uint128 contribution,
+        uint64 roundDuration
+    ) external returns (uint256 id) {
+        if (size < MIN_MEMBERS || size > MAX_MEMBERS) revert InvalidMemberCount();
+        (id, ) = _init(name, size, true, contribution, roundDuration);
     }
 
     /// @notice Join a forming circle by locking a deposit equal to one contribution.
-    function join(uint256 id) external payable {
+    function join(uint256 id, string calldata nickname) external payable {
         Circle storage c = _circle(id);
         if (c.status != Status.Forming) revert WrongStatus();
+        if (bytes(nickname).length > MAX_NICKNAME_LENGTH) revert NicknameTooLong();
         MemberState storage s = memberStates[id][msg.sender];
-        if (!s.invited) revert NotInvited();
         if (s.joined) revert AlreadyJoined();
         if (msg.value != c.contribution) revert WrongAmount();
 
-        s.joined = true;
-        emit MemberJoined(id, msg.sender);
+        if (c.open) {
+            // A forming open circle always has a free seat (it starts when full).
+            s.invited = true;
+            c.members.push(msg.sender);
+            if (msg.sender != c.creator) userCircles[msg.sender].push(id);
+        } else if (!s.invited) {
+            revert NotInvited();
+        }
 
-        if (++c.joinedCount == c.members.length) {
+        s.joined = true;
+        s.nickname = nickname;
+        emit MemberJoined(id, msg.sender, nickname);
+
+        if (++c.joinedCount == c.size) {
             c.status = Status.Active;
             c.roundDeadline = uint64(block.timestamp) + c.roundDuration;
             emit CircleStarted(id, c.roundDeadline);
         }
+    }
+
+    /// @notice Leave a circle that has not started yet. The deposit is refunded.
+    function leave(uint256 id) external {
+        Circle storage c = _circle(id);
+        if (c.status != Status.Forming) revert WrongStatus();
+        MemberState storage s = memberStates[id][msg.sender];
+        if (!s.joined) revert NotMember();
+
+        s.joined = false;
+        s.nickname = "";
+        --c.joinedCount;
+        withdrawable[msg.sender] += c.contribution;
+
+        if (c.open) {
+            // Remove from the seat list, keeping the join order of everyone else.
+            s.invited = false;
+            address[] storage ms = c.members;
+            uint256 n = ms.length;
+            uint256 i;
+            while (ms[i] != msg.sender) ++i;
+            for (; i + 1 < n; ++i) ms[i] = ms[i + 1];
+            ms.pop();
+        }
+        emit MemberLeft(id, msg.sender);
     }
 
     /// @notice The creator can cancel a circle that has not started yet. Deposits are refunded.
@@ -155,13 +209,23 @@ contract SavingsCircles {
         emit CircleCancelled(id, 0, address(0));
     }
 
+    /// @notice Change your nickname in a circle you have joined.
+    function setNickname(uint256 id, string calldata nickname) external {
+        _circle(id);
+        if (bytes(nickname).length > MAX_NICKNAME_LENGTH) revert NicknameTooLong();
+        MemberState storage s = memberStates[id][msg.sender];
+        if (!s.joined) revert NotMember();
+        s.nickname = nickname;
+        emit NicknameSet(id, msg.sender, nickname);
+    }
+
     // ---------------------------------------------------------------- rounds
 
     function contribute(uint256 id) external payable {
         Circle storage c = _circle(id);
         if (c.status != Status.Active) revert WrongStatus();
         MemberState storage s = memberStates[id][msg.sender];
-        if (!s.invited) revert NotInvited();
+        if (!s.joined) revert NotMember();
         if (s.lastPaidRound == c.round + 1) revert AlreadyPaid();
         if (block.timestamp >= c.roundDeadline) revert RoundClosed();
         if (msg.value != c.contribution) revert WrongAmount();
@@ -180,7 +244,6 @@ contract SavingsCircles {
         if (c.paidCount < n && block.timestamp < c.roundDeadline) revert RoundStillOpen();
 
         uint32 round = c.round;
-        uint256 contribution = c.contribution;
 
         if (c.paidCount < n) {
             // First pass: a repeat defaulter (deposit already spent) dissolves the circle.
@@ -204,8 +267,10 @@ contract SavingsCircles {
         }
 
         address recipient = c.members[round];
-        uint256 pot = contribution * n;
+        uint256 pot = uint256(c.contribution) * n;
         withdrawable[recipient] += pot;
+        totalPaidOut += pot;
+        ++roundsSettled;
         emit RoundSettled(id, round, recipient, pot);
 
         c.paidCount = 0;
@@ -213,6 +278,7 @@ contract SavingsCircles {
 
         if (c.round == n) {
             c.status = Status.Completed;
+            ++circlesCompleted;
             _refundDeposits(id, c);
             emit CircleCompleted(id);
         } else {
@@ -243,26 +309,65 @@ contract SavingsCircles {
             uint64 roundDuration,
             uint64 roundDeadline,
             uint32 round,
+            uint32 size,
             uint32 joinedCount,
             uint32 paidCount,
             Status status,
+            bool open,
             address[] memory members
         )
     {
         Circle storage c = _circle(id);
         return (c.creator, c.name, c.contribution, c.roundDuration, c.roundDeadline, c.round,
-            c.joinedCount, c.paidCount, c.status, c.members);
+            c.size, c.joinedCount, c.paidCount, c.status, c.open, c.members);
+    }
+
+    /// @notice Per-member details for a whole circle in one call, in payout order.
+    function getMemberDetails(uint256 id)
+        external
+        view
+        returns (
+            address[] memory addrs,
+            string[] memory nicknames,
+            bool[] memory joined,
+            bool[] memory paidThisRound,
+            bool[] memory depositUsed,
+            uint32[] memory defaults
+        )
+    {
+        Circle storage c = _circle(id);
+        uint256 n = c.members.length;
+        addrs = c.members;
+        nicknames = new string[](n);
+        joined = new bool[](n);
+        paidThisRound = new bool[](n);
+        depositUsed = new bool[](n);
+        defaults = new uint32[](n);
+        bool active = c.status == Status.Active;
+        for (uint256 i; i < n; ++i) {
+            MemberState storage s = memberStates[id][addrs[i]];
+            nicknames[i] = s.nickname;
+            joined[i] = s.joined;
+            paidThisRound[i] = active && s.lastPaidRound == c.round + 1;
+            depositUsed[i] = s.depositUsed;
+            defaults[i] = s.defaults;
+        }
     }
 
     function getMember(uint256 id, address member)
         external
         view
-        returns (bool invited, bool joined, bool depositUsed, uint32 defaults, bool paidThisRound)
+        returns (bool invited, bool joined, bool depositUsed, uint32 defaults, bool paidThisRound, string memory nickname)
     {
         Circle storage c = _circle(id);
         MemberState storage s = memberStates[id][member];
         return (s.invited, s.joined, s.depositUsed, s.defaults,
-            c.status == Status.Active && s.lastPaidRound == c.round + 1);
+            c.status == Status.Active && s.lastPaidRound == c.round + 1, s.nickname);
+    }
+
+    /// @notice Circles an account created, was invited to or joined (may contain circles it later left).
+    function getUserCircles(address account) external view returns (uint256[] memory) {
+        return userCircles[account];
     }
 
     function currentRecipient(uint256 id) external view returns (address) {
@@ -272,6 +377,27 @@ contract SavingsCircles {
     }
 
     // ---------------------------------------------------------------- internal
+
+    function _init(string calldata name, uint32 size, bool open, uint128 contribution, uint64 roundDuration)
+        private
+        returns (uint256 id, Circle storage c)
+    {
+        uint256 len = bytes(name).length;
+        if (len == 0 || len > MAX_NAME_LENGTH) revert InvalidName();
+        if (contribution == 0) revert InvalidContribution();
+        if (roundDuration < MIN_ROUND_DURATION || roundDuration > MAX_ROUND_DURATION) revert InvalidDuration();
+
+        id = circleCount++;
+        c = circles[id];
+        c.creator = msg.sender;
+        c.name = name;
+        c.contribution = contribution;
+        c.roundDuration = roundDuration;
+        c.size = size;
+        c.open = open;
+        userCircles[msg.sender].push(id);
+        emit CircleCreated(id, msg.sender, name, open, size, contribution, roundDuration);
+    }
 
     function _circle(uint256 id) private view returns (Circle storage c) {
         if (id >= circleCount) revert UnknownCircle();
