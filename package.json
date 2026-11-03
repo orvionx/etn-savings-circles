@@ -6,7 +6,9 @@
   "scripts": {
     "test": "hardhat test",
     "app": "node scripts/serve.js",
-    "test:e2e": "node scripts/e2e.js"
+    "test:e2e": "node scripts/e2e.js",
+    "keeper": "node scripts/keeper.js",
+    "keeper:dry": "node scripts/keeper.js --dry-run"
   },
   "keywords": [],
   "author": "",
@@ -17,6 +19,7 @@
     "@nomicfoundation/hardhat-ethers": "^3.0.8",
     "@nomicfoundation/hardhat-network-helpers": "^1.0.12",
     "@nomicfoundation/hardhat-verify": "^2.0.12",
+    "@openzeppelin/contracts": "^5.1.0",
     "chai": "^4.5.0",
     "dotenv": "^16.4.5",
     "ethers": "^6.13.4",
