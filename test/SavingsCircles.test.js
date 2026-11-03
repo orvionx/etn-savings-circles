@@ -46,8 +46,8 @@ describe("SavingsCircles", function () {
         .to.be.revertedWithCustomError(sc, "DuplicateMember").withArgs(addrs[0]);
       await expect(sc.createCircle("x", [addrs[0], ethers.ZeroAddress], C, DAY))
         .to.be.revertedWithCustomError(sc, "ZeroAddressMember");
-      await expect(sc.createOpenCircle("x", 1, C, DAY)).to.be.revertedWithCustomError(sc, "InvalidMemberCount");
-      await expect(sc.createOpenCircle("x", 51, C, DAY)).to.be.revertedWithCustomError(sc, "InvalidMemberCount");
+      await expect(sc.createOpenCircle("x", 1, C, DAY, 0)).to.be.revertedWithCustomError(sc, "InvalidMemberCount");
+      await expect(sc.createOpenCircle("x", 51, C, DAY, 0)).to.be.revertedWithCustomError(sc, "InvalidMemberCount");
     });
 
     it("starts only when every member has joined with the exact deposit", async function () {
@@ -77,7 +77,7 @@ describe("SavingsCircles", function () {
     it("tracks circles per user", async function () {
       const { sc, creator, members, outsider } = await setup();
       await sc.createCircle("A", members.map((m) => m.address), C, DAY);
-      await sc.connect(members[0]).createOpenCircle("B", 2, C, DAY);
+      await sc.connect(members[0]).createOpenCircle("B", 2, C, DAY, 0);
       await sc.connect(outsider).join(1, "", { value: C });
       expect(await sc.getUserCircles(creator.address)).to.deep.equal([0n]);
       expect(await sc.getUserCircles(members[0].address)).to.deep.equal([0n, 1n]);
@@ -90,8 +90,8 @@ describe("SavingsCircles", function () {
     it("fills seats in join order and starts when full", async function () {
       const { sc, signers } = await setup();
       const [, a, b, c, d] = signers;
-      await expect(sc.connect(a).createOpenCircle("Open Susu", 3, C, DAY))
-        .to.emit(sc, "CircleCreated").withArgs(0, a.address, "Open Susu", true, 3, C, DAY);
+      await expect(sc.connect(a).createOpenCircle("Open Susu", 3, C, DAY, 0))
+        .to.emit(sc, "CircleCreated").withArgs(0, a.address, "Open Susu", true, 3, C, DAY, 0);
       await sc.connect(c).join(0, "Chidi", { value: C });
       await sc.connect(a).join(0, "Ama", { value: C });
       expect((await sc.getCircle(0)).status).to.equal(Status.Forming);
@@ -107,7 +107,7 @@ describe("SavingsCircles", function () {
     it("lets members leave before the start, keeping everyone else's order", async function () {
       const { sc, signers } = await setup();
       const [, a, b, c, d] = signers;
-      await sc.connect(a).createOpenCircle("Open", 4, C, DAY);
+      await sc.connect(a).createOpenCircle("Open", 4, C, DAY, 0);
       for (const s of [a, b, c]) await sc.connect(s).join(0, "", { value: C });
       await expect(sc.connect(d).leave(0)).to.be.revertedWithCustomError(sc, "NotMember");
       await expect(sc.connect(b).leave(0)).to.emit(sc, "MemberLeft").withArgs(0, b.address);

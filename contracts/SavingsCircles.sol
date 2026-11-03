@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-/// @title ETN Savings Circles (v2)
+import {SavingsBadges} from "./SavingsBadges.sol";
+
+/// @title ETN Savings Circles (v3)
 /// @notice On-chain rotating savings and credit associations (ROSCAs, also known as
 ///         chamas, susus, tontines or stokvels) using native ETN.
 ///
@@ -18,7 +20,12 @@ pragma solidity ^0.8.24;
 ///  4. A member who misses a payment has it covered by their deposit, once. A second
 ///     miss by a member whose deposit is used up dissolves the circle: this round's
 ///     contributions and all remaining deposits are refunded.
-///  5. After the last round, every remaining deposit is returned.
+///  5. After the last round, every remaining deposit is returned and every member
+///     receives a soulbound badge NFT.
+///
+/// Reputation: the contract records each address's savings history (circles completed,
+/// on-time and missed payments, circles dissolved by their repeated default). Open
+/// circles can require a track record (N completed circles and no defaults) to join.
 ///
 /// All payouts use the pull pattern: amounts are credited and claimed with withdraw().
 contract SavingsCircles {
@@ -35,6 +42,7 @@ contract SavingsCircles {
         uint32 paidCount;   // members who paid in the current round
         Status status;
         bool open;          // anyone may join (payout order = join order)
+        uint32 minCompleted; // open circles: completed circles required to join (0 = anyone)
         string name;
         address[] members;  // payout order (open circles: joined members only)
     }
@@ -46,6 +54,14 @@ contract SavingsCircles {
         uint32 defaults;
         uint32 lastPaidRound; // round index + 1 of the last round paid (0 = never)
         string nickname;
+    }
+
+    struct Reputation {
+        uint32 joined;          // circles joined (net of leaving before the start)
+        uint32 completed;       // circles completed as a member
+        uint32 onTimePayments;  // contributions paid before the deadline
+        uint32 missedPayments;  // contributions covered by the deposit
+        uint32 defaulted;       // circles dissolved by this address's repeat miss
     }
 
     uint256 public constant MIN_MEMBERS = 2;
@@ -64,10 +80,13 @@ contract SavingsCircles {
     mapping(uint256 => mapping(address => MemberState)) private memberStates;
     mapping(address => uint256[]) private userCircles;
     mapping(address => uint256) public withdrawable;
+    mapping(address => Reputation) private reputations;
+
+    SavingsBadges public immutable badges;
 
     uint256 private locked = 1;
 
-    event CircleCreated(uint256 indexed id, address indexed creator, string name, bool open, uint32 size, uint256 contribution, uint64 roundDuration);
+    event CircleCreated(uint256 indexed id, address indexed creator, string name, bool open, uint32 size, uint256 contribution, uint64 roundDuration, uint32 minCompleted);
     event MemberJoined(uint256 indexed id, address indexed member, string nickname);
     event MemberLeft(uint256 indexed id, address indexed member);
     event NicknameSet(uint256 indexed id, address indexed member, string nickname);
@@ -78,6 +97,7 @@ contract SavingsCircles {
     event CircleCompleted(uint256 indexed id);
     event CircleCancelled(uint256 indexed id, uint32 round, address indexed defaulter);
     event Withdrawn(address indexed account, uint256 amount);
+    event BadgeAwarded(uint256 indexed id, address indexed member, uint256 tokenId);
 
     error InvalidMemberCount();
     error InvalidContribution();
@@ -99,6 +119,12 @@ contract SavingsCircles {
     error NothingToWithdraw();
     error TransferFailed();
     error Reentrancy();
+    error NotEligible();
+    error InvalidRequirement();
+
+    constructor() {
+        badges = new SavingsBadges();
+    }
 
     modifier nonReentrant() {
         if (locked != 1) revert Reentrancy();
@@ -118,7 +144,7 @@ contract SavingsCircles {
     ) external returns (uint256 id) {
         if (members.length < MIN_MEMBERS || members.length > MAX_MEMBERS) revert InvalidMemberCount();
         Circle storage c;
-        (id, c) = _init(name, uint32(members.length), false, contribution, roundDuration);
+        (id, c) = _init(name, uint32(members.length), false, contribution, roundDuration, 0);
 
         for (uint256 i; i < members.length; ++i) {
             address m = members[i];
@@ -132,14 +158,18 @@ contract SavingsCircles {
     }
 
     /// @notice Create an open circle with `size` seats. Anyone may join; payout order is join order.
+    /// @param minCompleted Track record required to join: at least this many completed
+    ///        circles and no defaults. 0 lets anyone join.
     function createOpenCircle(
         string calldata name,
         uint32 size,
         uint128 contribution,
-        uint64 roundDuration
+        uint64 roundDuration,
+        uint32 minCompleted
     ) external returns (uint256 id) {
         if (size < MIN_MEMBERS || size > MAX_MEMBERS) revert InvalidMemberCount();
-        (id, ) = _init(name, size, true, contribution, roundDuration);
+        if (minCompleted > 100) revert InvalidRequirement();
+        (id, ) = _init(name, size, true, contribution, roundDuration, minCompleted);
     }
 
     /// @notice Join a forming circle by locking a deposit equal to one contribution.
@@ -152,6 +182,7 @@ contract SavingsCircles {
         if (msg.value != c.contribution) revert WrongAmount();
 
         if (c.open) {
+            if (!isEligible(id, msg.sender)) revert NotEligible();
             // A forming open circle always has a free seat (it starts when full).
             s.invited = true;
             c.members.push(msg.sender);
@@ -162,6 +193,7 @@ contract SavingsCircles {
 
         s.joined = true;
         s.nickname = nickname;
+        ++reputations[msg.sender].joined;
         emit MemberJoined(id, msg.sender, nickname);
 
         if (++c.joinedCount == c.size) {
@@ -181,6 +213,7 @@ contract SavingsCircles {
         s.joined = false;
         s.nickname = "";
         --c.joinedCount;
+        --reputations[msg.sender].joined;
         withdrawable[msg.sender] += c.contribution;
 
         if (c.open) {
@@ -232,6 +265,7 @@ contract SavingsCircles {
 
         s.lastPaidRound = c.round + 1;
         ++c.paidCount;
+        ++reputations[msg.sender].onTimePayments;
         emit Contributed(id, c.round, msg.sender);
     }
 
@@ -262,6 +296,7 @@ contract SavingsCircles {
                 if (s.lastPaidRound == round + 1) continue;
                 s.depositUsed = true;
                 ++s.defaults;
+                ++reputations[m].missedPayments;
                 emit DepositUsed(id, round, m);
             }
         }
@@ -279,7 +314,7 @@ contract SavingsCircles {
         if (c.round == n) {
             c.status = Status.Completed;
             ++circlesCompleted;
-            _refundDeposits(id, c);
+            _complete(id, c);
             emit CircleCompleted(id);
         } else {
             c.roundDeadline = uint64(block.timestamp) + c.roundDuration;
@@ -370,6 +405,32 @@ contract SavingsCircles {
         return userCircles[account];
     }
 
+    function getReputation(address account)
+        external
+        view
+        returns (uint32 joined, uint32 completed, uint32 onTimePayments, uint32 missedPayments, uint32 defaulted)
+    {
+        Reputation storage r = reputations[account];
+        return (r.joined, r.completed, r.onTimePayments, r.missedPayments, r.defaulted);
+    }
+
+    function nameOf(uint256 id) external view returns (string memory) {
+        return _circle(id).name;
+    }
+
+    /// @notice Track record an open circle requires (completed circles, and no defaults). 0 = anyone.
+    function requirementOf(uint256 id) external view returns (uint32) {
+        return _circle(id).minCompleted;
+    }
+
+    /// @notice Whether `account` meets circle `id`'s track-record requirement.
+    function isEligible(uint256 id, address account) public view returns (bool) {
+        uint32 need = _circle(id).minCompleted;
+        if (need == 0) return true;
+        Reputation storage r = reputations[account];
+        return r.completed >= need && r.defaulted == 0;
+    }
+
     function currentRecipient(uint256 id) external view returns (address) {
         Circle storage c = _circle(id);
         if (c.status != Status.Active) revert WrongStatus();
@@ -378,7 +439,7 @@ contract SavingsCircles {
 
     // ---------------------------------------------------------------- internal
 
-    function _init(string calldata name, uint32 size, bool open, uint128 contribution, uint64 roundDuration)
+    function _init(string calldata name, uint32 size, bool open, uint128 contribution, uint64 roundDuration, uint32 minCompleted)
         private
         returns (uint256 id, Circle storage c)
     {
@@ -395,8 +456,9 @@ contract SavingsCircles {
         c.roundDuration = roundDuration;
         c.size = size;
         c.open = open;
+        c.minCompleted = minCompleted;
         userCircles[msg.sender].push(id);
-        emit CircleCreated(id, msg.sender, name, open, size, contribution, roundDuration);
+        emit CircleCreated(id, msg.sender, name, open, size, contribution, roundDuration, minCompleted);
     }
 
     function _circle(uint256 id) private view returns (Circle storage c) {
@@ -416,13 +478,20 @@ contract SavingsCircles {
             if (!s.depositUsed) refund += contribution;               // unused deposit
             if (refund != 0) withdrawable[m] += refund;
         }
+        ++reputations[defaulter].defaulted;
         emit CircleCancelled(id, round, defaulter);
     }
 
-    function _refundDeposits(uint256 id, Circle storage c) private {
-        for (uint256 i; i < c.members.length; ++i) {
+    /// @dev Last round settled: return unused deposits, record completion, award badges.
+    function _complete(uint256 id, Circle storage c) private {
+        uint256 n = c.members.length;
+        for (uint256 i; i < n; ++i) {
             address m = c.members[i];
-            if (!memberStates[id][m].depositUsed) withdrawable[m] += c.contribution;
+            MemberState storage s = memberStates[id][m];
+            if (!s.depositUsed) withdrawable[m] += c.contribution;
+            ++reputations[m].completed;
+            uint256 tokenId = badges.mint(m, uint64(id), uint32(n), s.defaults, c.contribution);
+            emit BadgeAwarded(id, m, tokenId);
         }
     }
 }
