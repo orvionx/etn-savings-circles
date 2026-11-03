@@ -43,19 +43,24 @@ async function main() {
   const factory = new ethers.ContractFactory(artifact.abi, artifact.bytecode, deployer);
   const sc = await factory.deploy(); await sc.waitForDeployment();
   const contract = await sc.getAddress();
-  const accounts = (await provider.send("eth_accounts", [])).slice(1, 4);
+  const all = await provider.send("eth_accounts", []);
+  const accounts = all.slice(1, 4);
   console.log(`Local contract ${contract}`);
 
   const executablePath = BROWSERS.find((b) => fs.existsSync(b));
-  const browser = await puppeteer.launch({ executablePath, headless: true, args: ["--no-sandbox", "--disable-background-timer-throttling", "--disable-renderer-backgrounding", "--disable-backgrounding-occluded-windows"], protocolTimeout: 60000 });
+  const browser = await puppeteer.launch({
+    executablePath, headless: true, protocolTimeout: 60000,
+    args: ["--no-sandbox", "--disable-background-timer-throttling", "--disable-renderer-backgrounding", "--disable-backgrounding-occluded-windows"],
+  });
   const base = `http://localhost:${APP_PORT}/?rpc=${encodeURIComponent(RPC)}&chainId=31337&contract=${contract}`;
   const consoleErrors = [];
 
-  async function openAs(account) {
+  async function openAs(account, viewport = { width: 390, height: 844 }) {
     const page = await browser.newPage();
-    await page.setViewport({ width: 390, height: 844, deviceScaleFactor: 1 });
+    await page.setViewport({ ...viewport, deviceScaleFactor: 1 });
     page.on("pageerror", (e) => consoleErrors.push(e.message));
-    page.on("console", (m) => { if (m.type() === "error") consoleErrors.push(m.text()); });
+    page.on("console", (m) => { if (m.type() === "error" && !/fonts\.g|favicon/.test(m.text())) consoleErrors.push(m.text()); });
+    page.on("dialog", (d) => d.accept());
     await page.evaluateOnNewDocument((rpc, acct) => {
       let id = 0;
       const call = async (method, params = []) => {
@@ -67,7 +72,7 @@ async function main() {
       window.ethereum = {
         isMetaMask: true,
         request: async ({ method, params }) => {
-          if (method === "eth_requestAccounts" || method === "eth_accounts") return [acct];
+          if (method === "eth_requestAccounts" || method === "eth_accounts") return acct ? [acct] : [];
           if (method.startsWith("wallet_")) return null;
           return call(method, params);
         },
@@ -78,80 +83,150 @@ async function main() {
     return page;
   }
 
+  const clearToasts = (page) => page.evaluate(() => { document.querySelector("#toasts").innerHTML = ""; });
+  async function waitDone(page, label, n = 1) {
+    await page.waitForFunction((n) => [...document.querySelectorAll(".toast")].filter((t) => /done/.test(t.textContent)).length >= n
+      || document.querySelectorAll(".toast.error").length, { timeout: 30000 }, n);
+    const text = await page.$$eval(".toast", (ts) => ts.map((t) => t.textContent.replace(/×/g, "").trim()).join(" | "));
+    check(!document_hasError(text) && text.includes("done"), `${label} → ${text}`);
+  }
+  function document_hasError(t) { return /error|wrong|cancelled|Not enough|isn't|already/i.test(t); }
   async function act(page, selector, label) {
     await page.bringToFront();
-    await page.evaluate(() => { document.querySelector("#toasts").innerHTML = ""; });
-    await page.waitForSelector(selector, { visible: true, timeout: 10000 });
+    await clearToasts(page);
+    await page.waitForSelector(selector, { visible: true, timeout: 15000 });
     await page.click(selector);
-    await page.waitForFunction(() => [...document.querySelectorAll(".toast")].some((t) => /done|went wrong|cancel|Not enough|can't|isn't|already/i.test(t.textContent)), { timeout: 20000 });
-    const text = await page.$$eval(".toast", (ts) => ts.map((t) => t.textContent).join(" | "));
-    check(text.includes("done"), `${label} → ${text.replace(/×/g, "").trim()}`);
+    await waitDone(page, label);
   }
-  // Hash-only goto is a same-document navigation, so force a real reload for fresh state.
-  const goCircle = async (page, id) => {
+  const fresh = async (page, hash) => {
     await page.bringToFront();
     await page.goto("about:blank");
-    await page.goto(`${base}#/circle/${id}`, { waitUntil: "networkidle0" });
-    await page.waitForSelector(".members");
+    await page.goto(`${base}${hash}`, { waitUntil: "networkidle0" });
   };
+  const goCircle = async (page, id) => { await fresh(page, `#/circle/${id}`); await page.waitForSelector(".members"); };
+  const text = (page, sel) => page.$eval(sel, (e) => e.textContent.replace(/\s+/g, " ").trim());
 
-  const [a, b, c] = [await openAs(accounts[0]), await openAs(accounts[1]), await openAs(accounts[2])];
-  await a.screenshot({ path: path.join(OUT, "1-home.png"), fullPage: true });
+  const a = await openAs(accounts[0]);
+  const b = await openAs(accounts[1]);
+  const c = await openAs(accounts[2]);
+  const viewer = await openAs(null, { width: 1280, height: 900 });
 
-  console.log("Create circle");
+  console.log("Home (no wallet)");
+  await viewer.bringToFront();
+  await viewer.waitForSelector(".hero h1");
+  check((await text(viewer, ".hero h1")).includes("Save together"), "hero renders");
+  await viewer.screenshot({ path: path.join(OUT, "1-home-desktop.png"), fullPage: true });
+
+  console.log("Create an open circle and take seat #1");
   await a.bringToFront();
   await a.click("#connect");
   await a.waitForFunction(() => document.querySelector("#connect").textContent.includes("…"));
-  await a.click('[data-tab="create"]');
-  await a.type("#f-name", "E2E Chama");
-  await a.type("#f-amount", "1.5");
-  await a.select("#f-dur", "300");
-  await a.click("#add-me");
-  await a.type("#f-members", "\n" + accounts[1] + "\n" + accounts[2]);
-  const summary = await a.$eval("#summary", (e) => e.textContent);
-  check(summary.includes("3 members") && summary.includes("4.5 ETN"), `summary: ${summary.slice(0, 80)}…`);
+  await fresh(a, "#/new");
+  await a.waitForSelector("#create-form");
+  await a.type("#f-name", "E2E Open Susu");
+  await a.click("#f-amount", { clickCount: 3 }); await a.type("#f-amount", "1.5");
+  await a.click('#dur-chips [data-dur="300"]');
+  await a.click('[data-step="-1"]'); await a.click('[data-step="-1"]');
+  check((await text(a, "#f-seats")) === "3", "seat stepper set to 3");
+  await a.type("#f-nick", "Amina");
+  const pv = await text(a, "#pv-text");
+  check(pv.includes("3 members") && pv.includes("4.5 ETN"), `live preview: ${pv.slice(0, 70)}…`);
   await a.screenshot({ path: path.join(OUT, "2-create.png"), fullPage: true });
-  await act(a, "#create-form [type=submit]", "createCircle");
-  await a.waitForFunction(() => location.hash === "#/circle/0");
-  check(true, "navigated to new circle page");
+  await clearToasts(a);
+  await a.click("#create-btn");
+  await waitDone(a, "create + take seat", 2);
+  await a.waitForFunction(() => location.hash === "#/circle/0", { timeout: 15000 });
+  await a.waitForSelector(".members");
+  check((await text(a, ".members")).includes("Amina"), "creator seated as Amina");
 
-  console.log("Join");
-  for (const [i, p] of [a, b, c].entries()) { await goCircle(p, 0); await act(p, '[data-act="join"]', `member ${i + 1} join`); }
+  console.log("Others join via the link with nicknames");
+  for (const [p, nick] of [[b, "Kofi"], [c, "Njeri"]]) {
+    await goCircle(p, 0);
+    await p.type("#j-nick", nick);
+    await act(p, '.action-card [data-act="join"]', `${nick} joins`);
+  }
   await goCircle(a, 0);
-  check((await a.$eval(".pill", (e) => e.textContent)) === "Active", "circle is Active after all joined");
+  check((await text(a, ".pill")).includes("Active"), "circle Active once all 3 seats are filled");
+  check(/Amina.*Kofi.*Njeri/.test(await text(a, ".members")), "payout order = join order (Amina, Kofi, Njeri)");
+  check(!!(await a.$(".ring-wrap svg .ring-node.current")), "ring highlights the current recipient");
 
   for (let r = 0; r < 3; r++) {
     console.log(`Round ${r + 1}`);
-    for (const [i, p] of [a, b, c].entries()) { await goCircle(p, 0); await act(p, '[data-act="pay"]', `member ${i + 1} pays`); }
-    if (r === 1) await c.screenshot({ path: path.join(OUT, "3-circle-active.png"), fullPage: true });
+    for (const [i, p] of [a, b, c].entries()) { await goCircle(p, 0); await act(p, '.action-card [data-act="pay"]', `member ${i + 1} pays`); }
+    if (r === 1) { await goCircle(c, 0); await c.screenshot({ path: path.join(OUT, "3-circle-active.png"), fullPage: true }); }
     await goCircle(b, 0);
-    await act(b, '[data-act="settle"]', `settle round ${r + 1}`);
+    await act(b, '.action-card [data-act="settle"]', `settle round ${r + 1}`);
   }
   await goCircle(a, 0);
-  check((await a.$eval(".pill", (e) => e.textContent)) === "Completed", "circle Completed after 3 rounds");
+  check((await text(a, ".pill")).includes("Completed"), "circle Completed after 3 rounds");
+  await a.waitForFunction(() => document.querySelector("#activity .timeline"), { timeout: 15000 });
+  if (await a.$("#more-activity")) await a.click("#more-activity");
+  const activity = await text(a, "#activity");
+  check(/Amina joined/.test(activity) && /Round 3: 4\.5 ETN sent to Njeri/.test(activity), "activity timeline shows joins and payouts");
+  await a.screenshot({ path: path.join(OUT, "3b-circle-completed.png"), fullPage: true });
 
-  console.log("Withdraw");
+  console.log("Dashboard + withdraw");
   for (const [i, p] of [a, b, c].entries()) {
-    await p.bringToFront(); await p.goto("about:blank"); await p.goto(base + "#/", { waitUntil: "networkidle0" });
-    await p.waitForSelector('[data-act="withdraw"]', { timeout: 10000 });
-    const banner = await p.$eval(".banner.ok", (e) => e.textContent);
-    check(banner.includes("6 ETN"), `member ${i + 1} sees "${banner.match(/[\d.]+ ETN/)?.[0]}" to collect (expected 6 ETN = 4.5 pot + 1.5 deposit)`);
-    if (i === 0) await p.screenshot({ path: path.join(OUT, "4-home-withdraw.png"), fullPage: true });
-    await act(p, '[data-act="withdraw"]', `member ${i + 1} withdraw`);
+    await fresh(p, "#/");
+    await p.waitForSelector('.collect [data-act="withdraw"]', { timeout: 15000 });
+    const v = await text(p, ".collect .v");
+    check(v === "6 ETN", `member ${i + 1} dashboard shows ${v} to collect (expected 6 ETN)`);
+    if (i === 0) await p.screenshot({ path: path.join(OUT, "4-dashboard.png"), fullPage: true });
+    await act(p, '.collect [data-act="withdraw"]', `member ${i + 1} withdraw`);
   }
   check((await provider.getBalance(contract)) === 0n, "contract balance is 0 after all withdrawals");
 
-  console.log("Error handling");
-  await goCircle(a, 0);
-  check(!(await a.$('[data-act="pay"]')), "no Pay button on a completed circle");
-  const outsider = await openAs((await provider.send("eth_accounts", []))[5]);
-  await outsider.click('[data-tab="create"]');
-  await outsider.type("#f-name", "Bad");
-  await outsider.type("#f-amount", "abc");
+  console.log("Stats");
+  await fresh(viewer, "#/");
+  await viewer.waitForSelector('[data-key="paid"]');
+  await new Promise((r) => setTimeout(r, 1200));
+  check((await text(viewer, '[data-key="paid"]')) === "13.5", `stats: ETN paid out = ${await text(viewer, '[data-key="paid"]')}`);
+
+  console.log("Open circle: join then leave");
+  await fresh(a, "#/new"); await a.waitForSelector("#create-form");
+  await a.type("#f-name", "Leave test");
+  await a.click("#f-seat");
+  await act(a, "#create-btn", "create open circle without seat");
+  await fresh(b, "#/"); await b.waitForSelector('[data-tab="open"]'); await b.click('[data-tab="open"]');
+  await b.waitForSelector(".circle-card");
+  check((await text(b, "#list")).includes("Leave test"), "'Open to join' tab lists the new circle");
+  await goCircle(b, 1);
+  await act(b, '.action-card [data-act="join"]', "Kofi joins circle #1");
+  await goCircle(b, 1);
+  await act(b, '.action-card [data-act="leave"]', "Kofi leaves circle #1");
+  await fresh(b, "#/"); await b.waitForSelector(".collect .v");
+  check((await text(b, ".collect .v")) === "10 ETN", "deposit back after leaving (10 ETN ready to collect)");
+
+  console.log("Invite-only circle");
+  await fresh(a, "#/new"); await a.waitForSelector("#create-form");
+  await a.click('[data-type="invite"]');
+  await a.type("#f-name", "Family Chama");
+  await a.click("#add-me");
+  await a.type("#f-members", "\n" + accounts[1] + "\n" + accounts[2]);
+  await clearToasts(a);
+  await a.click("#create-btn");
+  await waitDone(a, "create invite-only circle + take seat", 2);
+  await a.waitForFunction(() => location.hash === "#/circle/2", { timeout: 15000 });
+  await goCircle(a, 2);
+  check((await text(a, ".members")).includes("Invited"), "invitees show as Invited");
+  await goCircle(c, 2);
+  check((await text(c, ".action-card")).includes("You're invited"), "invitee sees the invitation");
+  const outsider = await openAs(all[6]);
+  await goCircle(outsider, 2);
+  check((await text(outsider, ".action-card")).includes("Members only"), "outsider can't join an invite-only circle");
+
+  console.log("Share + validation");
+  await outsider.click('.card [data-act="share"]');
+  await outsider.waitForSelector(".modal .qr svg");
+  check((await outsider.$eval("#share-url", (e) => e.value)).endsWith("#/circle/2"), "share modal has QR code and circle link");
+  await outsider.screenshot({ path: path.join(OUT, "5-share.png") });
+  await fresh(outsider, "#/new"); await outsider.waitForSelector("#create-form");
+  await outsider.click('[data-type="invite"]');
+  await outsider.click("#f-amount", { clickCount: 3 }); await outsider.type("#f-amount", "abc");
   await outsider.type("#f-members", "0x123");
-  await outsider.click("#create-form [type=submit]");
-  const err = await outsider.$eval("#form-err", (e) => e.textContent);
-  check(/valid address/.test(err) && /number/.test(err), `form validation: ${err}`);
+  await outsider.click("#create-btn");
+  const err = await text(outsider, "#form-err");
+  check(/name/.test(err) && /number/.test(err) && /valid address/.test(err), `form validation: ${err}`);
 
   check(consoleErrors.length === 0, `no browser console errors${consoleErrors.length ? ": " + consoleErrors.join(" | ") : ""}`);
   await browser.close();
