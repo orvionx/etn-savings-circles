@@ -1,0 +1,6 @@
+.env
+node_modules/
+artifacts/
+cache/
+e2e-screens/
+.netlify/
