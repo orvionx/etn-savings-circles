@@ -21,6 +21,7 @@
     "dotenv": "^16.4.5",
     "ethers": "^6.13.4",
     "hardhat": "^2.22.17",
-    "puppeteer-core": "^23.11.1"
+    "puppeteer-core": "^23.11.1",
+    "qrcode-generator": "^1.4.4"
   }
 }

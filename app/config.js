@@ -1,12 +1,13 @@
 // Network + contract configuration for the Savings Circles app.
-// Dev overrides via query string: ?rpc=...&chainId=...&contract=...
+// Dev overrides via query string: ?rpc=...&chainId=...&contract=...&fromBlock=...
 export const NETWORKS = {
   etnTestnet: {
     name: "Electroneum Testnet",
     chainId: 5201420,
     rpc: "https://rpc.ankr.com/electroneum_testnet",
     explorer: "https://testnet-blockexplorer.electroneum.com",
-    contract: "0x6DF34bE78c79C2aEC2D04cEA818DB61De6bDEb6F",
+    contract: "0x689A45c44430C1b0DEc84132daaC06faE763Cb75",
+    deployBlock: 16103025,
     faucet: "https://faucet.electroneum.com",
   },
 };
@@ -15,7 +16,8 @@ export function getConfig() {
   const base = { ...NETWORKS.etnTestnet };
   const q = new URLSearchParams(location.search);
   if (q.get("rpc")) base.rpc = q.get("rpc");
-  if (q.get("chainId")) { base.chainId = Number(q.get("chainId")); base.name = `Chain ${base.chainId}`; }
-  if (q.get("contract")) base.contract = q.get("contract");
+  if (q.get("chainId")) { base.chainId = Number(q.get("chainId")); base.name = `Chain ${base.chainId}`; base.faucet = null; }
+  if (q.get("contract")) { base.contract = q.get("contract"); base.deployBlock = 0; }
+  if (q.get("fromBlock")) base.deployBlock = Number(q.get("fromBlock"));
   return base;
 }
