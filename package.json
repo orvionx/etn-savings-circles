@@ -26,5 +26,8 @@
     "hardhat": "^2.22.17",
     "puppeteer-core": "^23.11.1",
     "qrcode-generator": "^1.4.4"
+  },
+  "engines": {
+    "node": ">=22"
   }
 }

@@ -13,10 +13,10 @@ jobs:
     name: Contract + browser tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
-          node-version: 22
+          node-version: 24
           cache: npm
       - run: npm ci --legacy-peer-deps
       - name: Contract tests
@@ -27,7 +27,7 @@ jobs:
           E2E_OUT: e2e-screens
       - name: Upload screenshots
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: e2e-screens
           path: e2e-screens
@@ -40,10 +40,10 @@ jobs:
     runs-on: ubuntu-latest
     concurrency: netlify-production
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
-          node-version: 22
+          node-version: 24
       - name: Deploy
         run: npx --yes netlify-cli@17.38.1 deploy --prod --dir app --site "$NETLIFY_SITE_ID" --message "CI ${GITHUB_SHA::7}"
         env:
