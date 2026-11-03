@@ -1,7 +1,10 @@
 #!/usr/bin/env node
 // Savings Circles keeper: settles due rounds and posts reminders.
 //
-//   node scripts/keeper.js [--dry-run]
+//   node scripts/keeper.js [--dry-run] [--ping]
+//
+//   --dry-run  report only, don't send transactions or event messages
+//   --ping     also post a status check-in to Telegram (to verify the setup)
 //
 // Environment:
 //   KEEPER_PRIVATE_KEY   wallet that pays gas for settleRound (required unless --dry-run)
@@ -20,6 +23,8 @@ const ABI = require("../artifacts/contracts/SavingsCircles.sol/SavingsCircles.js
 
 async function main() {
   const dryRun = process.argv.includes("--dry-run");
+  const ping = process.argv.includes("--ping"); // always post a status message to Telegram
+  let balance = null;
   const rpc = process.env.RPC_URL || "https://rpc.ankr.com/electroneum_testnet";
   let address = process.env.CONTRACT;
   if (!address) {
@@ -33,6 +38,7 @@ async function main() {
     if (!key) throw new Error("KEEPER_PRIVATE_KEY is not set (use --dry-run to only report)");
     runner = new ethers.Wallet(key, provider);
     const bal = await provider.getBalance(runner.address);
+    balance = bal;
     console.log(`Keeper ${runner.address} · balance ${ethers.formatEther(bal)} ETN`);
     if (bal < ethers.parseEther("0.01")) console.warn("Warning: keeper balance is low; top it up to keep settling rounds.");
   }
@@ -47,9 +53,19 @@ async function main() {
   for (const m of result.messages) console.log(`  ${m}`);
 
   const { TELEGRAM_BOT_TOKEN: token, TELEGRAM_CHAT_ID: chat } = process.env;
-  if (token && chat && result.messages.length && !dryRun) {
-    for (const m of result.messages) await sendTelegram(token, chat, m);
-    console.log(`Posted ${result.messages.length} message(s) to Telegram.`);
+  const posts = dryRun ? [] : [...result.messages];
+  if (ping) {
+    const bal = balance === null ? "" : ` Keeper balance: ${Number(ethers.formatEther(balance)).toFixed(3)} ETN.`;
+    posts.push(`🟢 Keeper check-in: ${result.scanned} active circle(s) watched, ${result.settled.length} settled, ${result.reminders.length} reminder(s) this run.${bal}${dryRun ? " (dry run)" : ""}`);
+    if (!token || !chat) {
+      console.error("--ping needs TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID; check the repository secrets.");
+      process.exitCode = 1;
+      return;
+    }
+  }
+  if (token && chat && posts.length) {
+    for (const m of posts) await sendTelegram(token, chat, m);
+    console.log(`Posted ${posts.length} message(s) to Telegram.`);
   }
   if (result.messages.some((m) => m.startsWith("❌"))) process.exitCode = 1;
 }

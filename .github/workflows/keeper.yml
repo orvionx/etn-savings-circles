@@ -10,6 +10,10 @@ on:
         description: "Only report, don't send transactions"
         type: boolean
         default: false
+      ping:
+        description: "Send a status message to Telegram (checks the bot setup)"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -31,7 +35,7 @@ jobs:
       - run: npm ci --legacy-peer-deps
       - run: npx hardhat compile
       - name: Run keeper
-        run: node scripts/keeper.js ${{ inputs.dry_run && '--dry-run' || '' }}
+        run: node scripts/keeper.js ${{ inputs.dry_run && '--dry-run' || '' }} ${{ inputs.ping && '--ping' || '' }}
         env:
           KEEPER_PRIVATE_KEY: ${{ secrets.KEEPER_PRIVATE_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
