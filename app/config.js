@@ -6,8 +6,8 @@ export const NETWORKS = {
     chainId: 5201420,
     rpc: "https://rpc.ankr.com/electroneum_testnet",
     explorer: "https://testnet-blockexplorer.electroneum.com",
-    contract: "0x689A45c44430C1b0DEc84132daaC06faE763Cb75",
-    deployBlock: 16103025,
+    contract: "0x850Aca8d6E879830526dd1cD72919b0E71E0b106",
+    deployBlock: 16103543,
     faucet: "https://faucet.electroneum.com",
   },
 };

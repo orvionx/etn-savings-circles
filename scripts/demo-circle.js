@@ -3,6 +3,7 @@
 //   1. a completed circle (full lifecycle, all paid out)
 //   2. an active circle mid-way (weekly rounds, so it stays live)
 //   3. an open circle with free seats that anyone can join
+//   4. a trusted open circle that requires 1+ completed circle
 const fs = require("fs");
 const { ethers, network } = require("hardhat");
 
@@ -24,7 +25,7 @@ async function main() {
 
   // 1. completed open circle
   let id = await nextId();
-  await send(`#${id} create "Nairobi Market Chama"`, sc.createOpenCircle("Nairobi Market Chama", 4, AMOUNT, HOUR));
+  await send(`#${id} create "Nairobi Market Chama"`, sc.createOpenCircle("Nairobi Market Chama", 4, AMOUNT, HOUR, 0));
   for (const [i, p] of people.entries()) await send(`#${id} ${names[i]} joins`, sc.connect(p).join(id, names[i], { value: AMOUNT }));
   for (let r = 0; r < 4; r++) {
     for (const [i, p] of people.entries()) await send(`#${id} round ${r + 1} ${names[i]} pays`, sc.connect(p).contribute(id, { value: AMOUNT }));
@@ -41,9 +42,14 @@ async function main() {
 
   // 3. open circle with free seats
   id = await nextId();
-  await send(`#${id} create "ETN Builders Circle"`, sc.createOpenCircle("ETN Builders Circle", 5, AMOUNT, WEEK));
+  await send(`#${id} create "ETN Builders Circle"`, sc.createOpenCircle("ETN Builders Circle", 5, AMOUNT, WEEK, 0));
   await send(`#${id} Amina joins`, sc.connect(deployer).join(id, "Amina", { value: AMOUNT }));
   await send(`#${id} Kofi joins`, sc.connect(wallets[0]).join(id, "Kofi", { value: AMOUNT }));
+
+  // 4. trusted open circle: only savers with 1+ completed circle and no defaults
+  id = await nextId();
+  await send(`#${id} create "Trusted Savers Club"`, sc.createOpenCircle("Trusted Savers Club", 4, AMOUNT, WEEK, 1));
+  await send(`#${id} Amina joins`, sc.connect(deployer).join(id, "Amina", { value: AMOUNT }));
 
   // collect payouts and return leftovers
   for (const p of people) if ((await sc.withdrawable(p.address)) > 0n) await send(`Withdraw ${p.address.slice(0, 10)}…`, sc.connect(p).withdraw());
@@ -54,7 +60,7 @@ async function main() {
     if (bal > fee) await send(`Return funds ${w.address.slice(0, 10)}…`, w.sendTransaction({ to: deployer.address, value: bal - fee, gasLimit: 21000 }));
   }
   console.log(`\nCircles: ${await sc.circleCount()} · paid out ${ethers.formatEther(await sc.totalPaidOut())} ETN · rounds ${await sc.roundsSettled()}`);
-  console.log("Note: the throwaway wallets keep their deposits in circles #1 and #2 (0.3 ETN total).");
+  console.log("Note: the throwaway wallets keep their deposits in circles #1 and #2 (0.3 ETN total), and badges from circle #0.");
 }
 
 main().catch((e) => { console.error(e); process.exitCode = 1; });
