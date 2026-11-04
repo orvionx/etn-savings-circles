@@ -206,7 +206,7 @@ async function main() {
   await goCircle(b, 1);
   await act(b, '.action-card [data-act="leave"]', "Kofi leaves circle #1");
   await fresh(b, "#/"); await b.waitForSelector(".collect .v");
-  check((await text(b, ".collect .v")) === "10 ETN", "deposit back after leaving (10 ETN ready to collect)");
+  check((await text(b, ".collect .v")) === "1 ETN", "deposit back after leaving (1 ETN ready to collect)");
 
   console.log("Invite-only circle");
   await fresh(a, "#/new"); await a.waitForSelector("#create-form");
@@ -254,6 +254,20 @@ async function main() {
   await outsider.click("#create-btn");
   const err = await text(outsider, "#form-err");
   check(/name/.test(err) && /number/.test(err) && /valid address/.test(err), `form validation: ${err}`);
+
+  console.log("Low balance");
+  const poor = all[7];
+  await provider.send("hardhat_setBalance", [poor, "0x" + ethers.parseEther("0.5").toString(16)]);
+  const p = await openAs(poor);
+  await fresh(p, "#/new"); await p.waitForSelector("#create-form");
+  await p.type("#f-name", "Too big");
+  await p.click("#f-amount", { clickCount: 3 }); await p.type("#f-amount", "5");
+  check(/not enough for this deposit/.test(await text(p, "#seat-hint")), "form warns when the wallet can't cover the deposit");
+  const before = Number(await provider.send("eth_blockNumber", []));
+  await clearToasts(p); await p.click("#create-btn");
+  await p.waitForSelector(".toast.error", { timeout: 15000 });
+  check(/needs about .*5.01 ETN.*your wallet has .*0.5 ETN/.test(await text(p, ".toast.error")), "create is blocked with a clear message instead of a wallet error");
+  check(Number(await provider.send("eth_blockNumber", [])) === before, "no transaction was sent");
 
   check(consoleErrors.length === 0, `no browser console errors${consoleErrors.length ? ": " + consoleErrors.join(" | ") : ""}`);
   await browser.close();
