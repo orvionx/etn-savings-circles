@@ -62,7 +62,7 @@ In general the first recipient can gain up to (members − 2) × contribution, p
 
 ### SC-04 · Low · No Content-Security-Policy (fixed)
 
-The app already escapes every user-supplied string it renders, and no injection was found. A CSP adds a second layer of defence. `netlify.toml` now sends a policy that only allows scripts from the site itself, and network connections only to the ETN RPC and explorer. It also sends a `Permissions-Policy` that denies camera, microphone and location access.
+The app already escapes every user-supplied string it renders, and no injection was found. A CSP adds a second layer of defence. `netlify.toml` now sends a policy that only allows scripts from the site itself, and network connections only to the ETN RPC and explorer. It also sends a `Permissions-Policy` that denies camera, microphone and location access. Verified on the live site: the app loads and works under the policy. The only blocked script is the toolbar Netlify injects into hosted pages, which leaves a console message but does not affect the app.
 
 ### SC-05 · Low · Copy overstated what deposits protect (fixed)
 
