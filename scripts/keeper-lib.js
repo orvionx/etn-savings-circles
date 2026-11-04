@@ -12,7 +12,15 @@ const fmt = (wei) => {
   return `${dd ? `${i}.${dd}` : i} ETN`;
 };
 const short = (a) => `${a.slice(0, 6)}…${a.slice(-4)}`;
-const label = (addr, nick) => (nick && nick.trim()) || short(addr);
+// Circle names and nicknames are chosen by anyone. Before they go into a public channel,
+// drop anything Telegram would turn into a link or mention (URLs, domains, @handles),
+// so the bot can't be used to post phishing links.
+const LINKY = /https?:|www\.|t\.me|[\p{L}\p{N}-]\s*[.\u3002]\s*[a-z]{2,}\b|@\w/iu;
+const safeText = (s, fallback) => {
+  const t = String(s ?? "").replace(/[\p{Cc}\p{Cf}]/gu, " ").replace(/\s+/g, " ").trim();
+  return !t || LINKY.test(t) ? fallback : t;
+};
+const label = (addr, nick) => safeText(nick, short(addr));
 function humanLeft(sec) {
   if (sec >= 86400) return `${Math.round(sec / 3600)} hours`;
   if (sec >= 3600) return `${Math.round(sec / 360) / 10} hours`;
@@ -53,12 +61,13 @@ async function runKeeper({ contract, now, interval = 900, dryRun = false, appUrl
     const round = Number(c.round);
     const pot = c.contribution * BigInt(n);
     const recipient = label(d.addrs[round], d.nicknames[round]);
+    const title = safeText(c.name, `Circle #${id}`);
 
     if (paid === n || now >= deadline) {
       const missed = d.addrs.map((a, i) => (!d.paidThisRound[i] ? label(a, d.nicknames[i]) : null)).filter(Boolean);
       if (dryRun) {
         out.settled.push({ id, round, dryRun: true });
-        out.messages.push(`[dry run] would settle "${c.name}" round ${round + 1}`);
+        out.messages.push(`[dry run] would settle "${title}" round ${round + 1}`);
         continue;
       }
       try {
@@ -69,15 +78,15 @@ async function runKeeper({ contract, now, interval = 900, dryRun = false, appUrl
         const dissolved = names.includes("CircleCancelled");
         const completed = names.includes("CircleCompleted");
         out.settled.push({ id, round, tx: tx.hash, dissolved, completed });
-        if (dissolved) out.messages.push(`⚠️ "${c.name}" was dissolved after a repeat missed payment. All members were refunded. ${link(id)}`);
+        if (dissolved) out.messages.push(`⚠️ "${title}" was dissolved after a repeat missed payment. This round's payments and unused deposits were refunded. ${link(id)}`);
         else {
-          let m = `✅ "${c.name}" round ${round + 1} settled: ${fmt(pot)} sent to ${recipient}.`;
+          let m = `✅ "${title}" round ${round + 1} settled: ${fmt(pot)} sent to ${recipient}.`;
           if (missed.length) m += ` Covered by deposit: ${missed.join(", ")}.`;
           if (completed) m += ` 🏁 The circle is complete and every member earned a badge.`;
           out.messages.push(`${m} ${link(id)}`);
         }
       } catch (e) {
-        out.messages.push(`❌ Could not settle "${c.name}" round ${round + 1}: ${e.shortMessage || e.message}`);
+        out.messages.push(`❌ Could not settle "${title}" round ${round + 1}: ${e.shortMessage || e.message}`);
       }
       continue;
     }
@@ -87,7 +96,7 @@ async function runKeeper({ contract, now, interval = 900, dryRun = false, appUrl
     if (left <= lead && left > lead - interval) {
       const unpaid = d.addrs.map((a, i) => (!d.paidThisRound[i] ? label(a, d.nicknames[i]) : null)).filter(Boolean);
       out.reminders.push({ id, round, unpaid });
-      out.messages.push(`⏰ "${c.name}" round ${round + 1} closes in ${humanLeft(left)}. ${paid}/${n} paid. Still to pay ${fmt(c.contribution)}: ${unpaid.join(", ")}. ${link(id)}`);
+      out.messages.push(`⏰ "${title}" round ${round + 1} closes in ${humanLeft(left)}. ${paid}/${n} paid. Still to pay ${fmt(c.contribution)}: ${unpaid.join(", ")}. ${link(id)}`);
     }
   }
   return out;
@@ -102,4 +111,4 @@ async function sendTelegram(token, chatId, text) {
   if (!res.ok) throw new Error(`Telegram ${res.status}: ${(await res.text()).slice(0, 200)}`);
 }
 
-module.exports = { runKeeper, reminderLead, sendTelegram };
+module.exports = { runKeeper, reminderLead, sendTelegram, safeText };

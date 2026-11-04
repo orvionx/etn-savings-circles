@@ -530,7 +530,7 @@ async function viewHome() {
         <h1>Save together.<br><span class="grad-text">Get paid out in turn.</span></h1>
         <p class="lead">The chama, susu and tontine, rebuilt on Electroneum Smart Chain. Everyone pays the same amount each round and one member takes the whole pot. The smart contract holds the money, so nobody has to.</p>
         <div class="cta"><a class="btn primary large" href="#/new">Start a circle</a><a class="btn secondary large" href="#circles" data-tab-jump="open">Join an open circle</a></div>
-        <div class="trust"><span>No middleman</span><span>No fees</span><span>Deposits protect every member</span><span>Earn an on-chain savings reputation</span></div>
+        <div class="trust"><span>No middleman</span><span>No fees</span><span>Deposits cover a missed payment</span><span>Earn an on-chain savings reputation</span></div>
       </div>
       ${heroArt()}
     </section>
