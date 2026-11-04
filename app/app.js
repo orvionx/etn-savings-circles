@@ -74,7 +74,7 @@ const BADGE_ABI = [
 ];
 const REQUIREMENTS = [[0, "Anyone"], [1, "1+ completed circle"], [3, "3+ completed circles"]];
 const DURATIONS = [[300, "5 min", "demo"], [3600, "1 hour"], [86400, "1 day"], [604800, "1 week"], [1209600, "2 weeks"], [2592000, "1 month"]];
-const AMOUNT_CHIPS = ["5", "10", "50", "100", "500"];
+const AMOUNT_CHIPS = ["1", "5", "10", "50", "100"];
 
 // Public RPCs reject large JSON-RPC batches (HTTP 413), so keep batches small.
 const readProvider = new ethers.JsonRpcProvider(CFG.rpc, CFG.chainId, { staticNetwork: true, batchMaxCount: 8 });
@@ -230,6 +230,18 @@ function openModal(html) {
 }
 function escClose(e) { if (e.key === "Escape") closeModal(); }
 function closeModal() { $("#modal-root").innerHTML = ""; document.removeEventListener("keydown", escClose); }
+
+// Rough upper bound for one transaction's network fee on ETN (about 300k gas).
+const FEE_MARGIN = ethers.parseEther("0.005");
+/** Returns true if the wallet can pay `value` plus fees; otherwise explains and returns false. */
+function haveFunds(value, what) {
+  if (!state.account || !state.chainOk) return true; // sendTx connects / switches network first
+  const need = value + FEE_MARGIN;
+  if (state.balance >= need) return true;
+  const faucet = CFG.faucet ? ` <a href="${CFG.faucet}" target="_blank" rel="noopener">Get test ETN from the faucet</a>.` : "";
+  toast(`${esc(what)} needs about <b>${fmt(need)}</b> including the network fee, but your wallet has <b>${fmt(state.balance)}</b>.${faucet}`, { kind: "error", ttl: 12000 });
+  return false;
+}
 
 async function sendTx(label, fn, { celebrate = false } = {}) {
   if (!state.signer) { await connect(); if (!state.signer) return false; }
@@ -618,7 +630,7 @@ async function renderList() {
 // ------------------------------------------------------------------ create
 function viewCreate() {
   const view = $("#view");
-  const f = { open: true, name: "", amount: "10", duration: 604800, seats: 5, members: "", nickname: "", seat: true, req: 0 };
+  const f = { open: true, name: "", amount: "1", duration: 604800, seats: 5, members: "", nickname: "", seat: true, req: 0 };
   view.innerHTML = `<a class="back" href="#/">← Back</a>
     <div class="detail-head"><h1>Start a savings circle</h1><p class="muted" style="margin:0 0 18px">Set the rules once. The smart contract enforces them for everyone.</p></div>
     <div class="create-layout">
@@ -628,8 +640,8 @@ function viewCreate() {
           <button type="button" data-type="invite" aria-pressed="false"><b>🔒 Invite-only</b><span>List exact wallets and payout order.</span></button></div></div>
         <div><label for="f-name">Circle name</label><input id="f-name" maxlength="64" placeholder="e.g. Kibera Market Chama" autocomplete="off"></div>
         <div><label for="f-amount">Each member pays per round</label>
-          <div class="input-affix"><input id="f-amount" inputmode="decimal" value="10" autocomplete="off"><span>ETN</span></div>
-          <div class="chips" id="amount-chips">${AMOUNT_CHIPS.map((a) => `<button type="button" data-amt="${a}" aria-pressed="${a === "10"}">${a}</button>`).join("")}</div></div>
+          <div class="input-affix"><input id="f-amount" inputmode="decimal" value="1" autocomplete="off"><span>ETN</span></div>
+          <div class="chips" id="amount-chips">${AMOUNT_CHIPS.map((a) => `<button type="button" data-amt="${a}" aria-pressed="${a === "1"}">${a}</button>`).join("")}</div></div>
         <div><span class="label">How often?</span>
           <div class="chips" id="dur-chips" style="margin-top:0">${DURATIONS.map(([s, l, t]) => `<button type="button" data-dur="${s}" aria-pressed="${s === 604800}">${l}${t ? ` <span style="opacity:.7">· ${t}</span>` : ""}</button>`).join("")}</div></div>
         <div id="seats-box"><span class="label">Number of members</span>
@@ -643,7 +655,7 @@ function viewCreate() {
           <div class="row" style="margin-top:8px"><button type="button" class="btn small secondary" id="add-me">+ Add my address</button></div>
         </div>
         <div id="seat-box" class="stack" style="background:var(--surface-2);border-radius:14px;padding:14px">
-          <label class="check-row"><input type="checkbox" id="f-seat" checked><span><b>Take a seat right away</b><br><span class="small muted" id="seat-hint">Locks a 10 ETN deposit. You'll be member #1 and get the first pot.</span></span></label>
+          <label class="check-row"><input type="checkbox" id="f-seat" checked><span><b>Take a seat right away</b><br><span class="small muted" id="seat-hint">Locks a 1 ETN deposit. You'll be member #1 and get the first pot.</span></span></label>
           <div><label for="f-nick">Your nickname <span class="hint">(optional, shown to members)</span></label><input id="f-nick" maxlength="32" placeholder="e.g. Amina" autocomplete="off"></div>
         </div>
         <div class="err" id="form-err" hidden></div>
@@ -678,7 +690,10 @@ function viewCreate() {
     const size = f.open ? f.seats : Math.max(2, pm.members.length);
     const inList = !f.open && state.account && pm.members.some((m) => same(m, state.account));
     $("#seat-box").hidden = !f.open && !inList;
-    $("#seat-hint").textContent = amt ? `Locks a ${fmt(amt)} deposit${f.open ? ". You'll be member #1 and get the first pot." : " (you get it back at the end)."}` : "Locks a one-round deposit.";
+    const lowFunds = f.seat && amt && state.account && state.chainOk && state.balance < amt + FEE_MARGIN * 2n;
+    $("#seat-hint").innerHTML = (amt ? `Locks a ${fmt(amt)} deposit${f.open ? ". You'll be member #1 and get the first pot." : " (you get it back at the end)."}` : "Locks a one-round deposit.")
+      + (lowFunds ? `<br><span class="warn-text">Your wallet has ${fmt(state.balance)}, not enough for this deposit. Lower the amount or untick this box.</span>` : "")
+      + (f.seat && amt ? `<br><span class="tiny">Your wallet asks you to confirm twice: once to create the circle, once to take your seat.</span>` : "");
     $$("#amount-chips button").forEach((b) => b.setAttribute("aria-pressed", $("#f-amount").value.trim() === b.dataset.amt));
     $$("#dur-chips button").forEach((b) => b.setAttribute("aria-pressed", Number(b.dataset.dur) === f.duration));
     $$("#req-chips button").forEach((b) => b.setAttribute("aria-pressed", Number(b.dataset.req) === f.req));
@@ -729,18 +744,25 @@ function viewCreate() {
     const errEl = $("#form-err");
     if (errs.length) { errEl.hidden = false; errEl.innerHTML = errs.map(esc).join("<br>"); return; }
     errEl.hidden = true;
+    const seating = f.seat && (f.open || inList);
+    if (!state.account) await connect();
+    if (!state.account) return;
+    if (!haveFunds(seating ? amt + FEE_MARGIN : 0n, seating ? "Creating the circle and taking your seat" : "Creating the circle")) return;
     const btn = $("#create-btn"); btn.disabled = true;
+    const createLabel = seating ? "Step 1 of 2 · Create circle" : "Create circle";
     const receipt = f.open
-      ? await sendTx("Create circle", (c) => c.createOpenCircle(f.name, f.seats, amt, f.duration, f.req))
-      : await sendTx("Create circle", (c) => c.createCircle(f.name, pm.members, amt, f.duration));
+      ? await sendTx(createLabel, (c) => c.createOpenCircle(f.name, f.seats, amt, f.duration, f.req))
+      : await sendTx(createLabel, (c) => c.createCircle(f.name, pm.members, amt, f.duration));
     if (!receipt) { btn.disabled = false; return; }
     const evt = receipt.logs.map((l) => { try { return iface.parseLog(l); } catch { return null; } }).find((x) => x?.name === "CircleCreated");
     const id = evt ? evt.args.id : null;
-    if (id !== null && f.seat && (f.open || inList)) {
-      await sendTx("Take your seat", (c) => c.join(id, f.nickname, { value: amt }));
+    let seatFailed = false;
+    if (id !== null && seating) {
+      seatFailed = !(await sendTx("Step 2 of 2 · Take your seat", (c) => c.join(id, f.nickname, { value: amt })));
     }
     state.tab = "mine";
     location.hash = id !== null ? `#/circle/${id}` : "#/";
+    if (seatFailed) toast("Your circle was created, but your seat wasn't taken. Use <b>Join</b> on the circle page to take it.", { ttl: 15000 });
   };
 }
 
@@ -854,26 +876,43 @@ async function viewCircle(id) {
   loadActivity(c);
 }
 
-async function getLogsSafe(filter) {
-  try { return await readProvider.getLogs(filter); }
-  catch (e) {
-    // Some RPCs cap the block range; fall back to recent chunks.
-    const latest = await readProvider.getBlockNumber();
-    const out = []; const step = 10000;
-    for (let to = latest, i = 0; to >= filter.fromBlock && i < 30; to -= step, i++) {
-      const from = Math.max(filter.fromBlock, to - step + 1);
-      out.unshift(...await readProvider.getLogs({ ...filter, fromBlock: from, toBlock: to }));
-    }
-    return out;
+const LOG_CHUNK = 1000; // the public ETN RPC rejects eth_getLogs ranges above ~1000 blocks
+/** All events of one circle, oldest first. Each item: { topics, data, blockNumber, transactionHash, timestamp? } */
+async function circleLogs(id) {
+  const topic = ethers.zeroPadValue(ethers.toBeHex(id), 32);
+  const start = CFG.deployBlock || 0;
+  if (CFG.explorerApi) {
+    try {
+      const url = `${CFG.explorerApi}?module=logs&action=getLogs&fromBlock=${start}&toBlock=latest&address=${CFG.contract}&topic1=${topic}&topic0_1_opr=and`;
+      const j = await (await fetch(url)).json();
+      if (Array.isArray(j.result)) {
+        return j.result.map((l) => ({ topics: l.topics.filter(Boolean), data: l.data, blockNumber: Number(l.blockNumber),
+          transactionHash: l.transactionHash, timestamp: Number(l.timeStamp) }));
+      }
+    } catch (e) { console.warn("Explorer API unavailable, reading logs from the RPC", e); }
   }
+  const filter = { address: CFG.contract, topics: [null, topic] };
+  const latest = await readProvider.getBlockNumber();
+  try { return await readProvider.getLogs({ ...filter, fromBlock: start, toBlock: latest }); } catch {}
+  // Scan backwards in chunks until the circle's creation event (its first event) shows up.
+  const created = iface.getEvent("CircleCreated").topicHash;
+  const out = [];
+  for (let to = latest, n = 0; to >= start && n < 120; n += 4) {
+    const ranges = [];
+    for (let k = 0; k < 4 && to >= start; k++, to -= LOG_CHUNK) ranges.push([Math.max(start, to - LOG_CHUNK + 1), to]);
+    const parts = await Promise.all(ranges.map(([a, b]) => readProvider.getLogs({ ...filter, fromBlock: a, toBlock: b })));
+    for (const p of parts) out.unshift(...p);
+    if (out.some((l) => l.topics[0] === created)) break;
+  }
+  return out;
 }
 async function loadActivity(c) {
   const el = $("#activity"); if (!el) return;
   try {
-    const logs = await getLogsSafe({ address: CFG.contract, fromBlock: CFG.deployBlock || 0, toBlock: "latest", topics: [null, ethers.zeroPadValue(ethers.toBeHex(c.id), 32)] });
+    const logs = await circleLogs(c.id);
     const events = logs.map((l) => { try { return { log: l, ev: iface.parseLog(l) }; } catch { return null; } }).filter((x) => x && x.ev.name !== "Withdrawn" && x.ev.name !== "BadgeAwarded").reverse().slice(0, 40);
     // Timestamps are cosmetic: fetch them for the newest events only, and tolerate failures.
-    const blocks = [...new Set(events.slice(0, 12).map((e) => e.log.blockNumber))];
+    const blocks = [...new Set(events.slice(0, 12).filter((e) => !e.log.timestamp).map((e) => e.log.blockNumber))];
     const times = Object.fromEntries(await Promise.all(blocks.map(async (b) => {
       try { return [b, (await readProvider.getBlock(b))?.timestamp ?? 0]; } catch { return [b, 0]; }
     })));
@@ -893,7 +932,7 @@ async function loadActivity(c) {
         case "CircleCancelled": dot = "r"; icon = "×"; text = Number(a.round) === 0 && a.defaulter === ethers.ZeroAddress ? "Circle cancelled — deposits refunded" : `Circle dissolved after a repeat miss by <b>${who(a.defaulter)}</b>`; break;
         default: return "";
       }
-      return `<li${idx >= 6 ? ' class="more"' : ""}><span class="dot ${dot}">${icon}</span><div class="t">${text}</div><a class="when" href="${txUrl(log.transactionHash)}" target="_blank" rel="noopener">${times[log.blockNumber] ? relTime(times[log.blockNumber]) : "view"} ↗</a></li>`;
+      return `<li${idx >= 6 ? ' class="more"' : ""}><span class="dot ${dot}">${icon}</span><div class="t">${text}</div><a class="when" href="${txUrl(log.transactionHash)}" target="_blank" rel="noopener">${(log.timestamp || times[log.blockNumber]) ? relTime(log.timestamp || times[log.blockNumber]) : "view"} ↗</a></li>`;
     }).join("");
     el.innerHTML = items
       ? `<ul class="timeline">${items}</ul>${events.length > 6 ? `<button class="btn small ghost" id="more-activity">Show all ${events.length} events</button>` : ""}`
@@ -1011,9 +1050,9 @@ document.addEventListener("click", async (ev) => {
       case "switch": await syncWallet(true); break;
       case "reload": state.explore = state.mine = null; await route(); break;
       case "withdraw": await sendTx("Withdraw", (c) => c.withdraw(), { celebrate: true }); break;
-      case "join": { const nick = ($("#j-nick")?.value || "").trim(); await sendTx("Join circle", (c) => c.join(id, nick, { value: amt }), { celebrate: true }); break; }
+      case "join": { if (!haveFunds(amt, "Joining")) break; const nick = ($("#j-nick")?.value || "").trim(); await sendTx("Join circle", (c) => c.join(id, nick, { value: amt }), { celebrate: true }); break; }
       case "leave": if (confirm("Leave this circle? Your deposit will be ready to collect.")) await sendTx("Leave circle", (c) => c.leave(id)); break;
-      case "pay": await sendTx("Pay contribution", (c) => c.contribute(id, { value: amt })); break;
+      case "pay": if (!haveFunds(amt, "This payment")) break; await sendTx("Pay contribution", (c) => c.contribute(id, { value: amt })); break;
       case "settle": await sendTx("Settle round", (c) => c.settleRound(id), { celebrate: true }); break;
       case "cancel": if (confirm("Cancel this circle? Everyone who joined gets their deposit back.")) await sendTx("Cancel circle", (c) => c.cancelForming(id)); break;
       case "nick": { const v = prompt("Your nickname in this circle (max 32 characters):", meIn(state.current)?.nickname || ""); if (v !== null) await sendTx("Update nickname", (c) => c.setNickname(id, v.trim().slice(0, 32))); break; }
