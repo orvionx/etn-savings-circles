@@ -337,7 +337,8 @@ async function loadCircle(id) {
 }
 async function loadExplore() {
   const count = Number(await reader.circleCount());
-  const ids = []; for (let i = count - 1; i >= Math.max(0, count - 30); i--) ids.push(i);
+  const hidden = new Set(CFG.hiddenCircles || []);
+  const ids = []; for (let i = count - 1; i >= 0 && ids.length < 30; i--) if (!hidden.has(i)) ids.push(i);
   return Promise.all(ids.map(loadCircle));
 }
 async function loadMine() {
