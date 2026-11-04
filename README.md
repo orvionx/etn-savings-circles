@@ -119,6 +119,8 @@ Put your deployer key in `.env` as `PRIVATE_KEY=0x...`. That file is excluded fr
 
 ## Known limitations and next steps
 
+An internal security review with measured findings is in [docs/SECURITY_REVIEW.md](docs/SECURITY_REVIEW.md).
+
 - The deposit covers one missed payment. A member who has already received the pot early in the rotation is only bound by that deposit and their reputation. Track-record circles reduce this risk; larger deposits for newcomers would reduce it further.
 - Reputation can be farmed by running small circles between your own wallets; it costs only gas. Weighting by amount saved, or attestations from known savers, would make it harder to game.
 - Contributions are in native ETN only. A stable-value token option would help with price swings.
