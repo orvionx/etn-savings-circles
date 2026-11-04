@@ -55,6 +55,23 @@ npm run keeper:dry   # report what would happen
 npm run keeper       # settle due rounds (needs KEEPER_PRIVATE_KEY in .env)
 ```
 
+### Demo crew
+
+So the live app and the Telegram channel always show real activity, five testnet wallets
+(Ada, Bola, Chidi, Dayo and Efe) keep a demo circle running. Its name always starts with
+**"Demo:"** so nobody mistakes it for real users.
+
+- The crew saves 0.05 ETN a day in an invite-only circle and starts a new one when it completes.
+- Members pay at staggered times through the day, and a different member pays last each round,
+  so reminders, settlements and payouts all appear naturally.
+- `scripts/demo-crew.js` runs in the keeper workflow before the keeper. The wallets are derived
+  from the keeper key, so no extra secret is needed, and the keeper wallet tops them up when they run low.
+
+```bash
+npm run demo-crew -- --addresses   # list the crew wallets and balances
+npm run demo-crew -- --dry-run     # report what would happen
+```
+
 ## Deployment (testnet)
 
 | | |

@@ -8,7 +8,8 @@
     "app": "node scripts/serve.js",
     "test:e2e": "node scripts/e2e.js",
     "keeper": "node scripts/keeper.js",
-    "keeper:dry": "node scripts/keeper.js --dry-run"
+    "keeper:dry": "node scripts/keeper.js --dry-run",
+    "demo-crew": "node scripts/demo-crew.js"
   },
   "keywords": [],
   "author": "",

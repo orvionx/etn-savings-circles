@@ -1,6 +1,6 @@
 name: Keeper
 
-# Settles savings-circle rounds that are due and posts reminders.
+# Keeps the demo circle going, settles rounds that are due and posts reminders.
 on:
   schedule:
     - cron: "*/15 * * * *"
@@ -34,6 +34,14 @@ jobs:
           cache: npm
       - run: npm ci --legacy-peer-deps
       - run: npx hardhat compile
+      - name: Run demo crew
+        if: ${{ !inputs.dry_run }}
+        run: node scripts/demo-crew.js
+        continue-on-error: true
+        env:
+          KEEPER_PRIVATE_KEY: ${{ secrets.KEEPER_PRIVATE_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
       - name: Run keeper
         run: node scripts/keeper.js ${{ inputs.dry_run && '--dry-run' || '' }} ${{ inputs.ping && '--ping' || '' }}
         env:
