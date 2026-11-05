@@ -55,11 +55,20 @@ async function runKeeper({ contract, now, interval = 900, dryRun = false, appUrl
     const c = await contract.getCircle(id);
     const status = STATUS[Number(c.status)];
     if (status === "Drawing") {
-      if (block <= Number(await contract.drawBlockOf(id))) continue; // committed block not mined yet
       const title = safeText(c.name, `Circle #${id}`);
+      const draw = await contract.getDraw(id);
+      const drawBlock = Number(draw.drawBlock), revealDeadline = Number(draw.revealDeadline);
+      if (!drawBlock && now < revealDeadline) { // members are still revealing
+        const left = revealDeadline - now, lead = 6 * 3600;
+        if (left <= lead && left > lead - interval) {
+          out.messages.push(`🔑 "${title}": ${draw.revealedCount}/${c.size} members have revealed. Reveal within ${humanLeft(left)} or you go to the end of the payout order. ${link(id)}`);
+        }
+        continue;
+      }
+      if (drawBlock && block <= drawBlock) continue; // committed block not mined yet
       if (dryRun) {
         out.drawn.push({ id, dryRun: true });
-        out.messages.push(`[dry run] would draw the payout order of "${title}"`);
+        out.messages.push(`[dry run] would ${drawBlock ? "draw" : "schedule the draw of"} the payout order of "${title}"`);
         continue;
       }
       try {
@@ -67,7 +76,7 @@ async function runKeeper({ contract, now, interval = 900, dryRun = false, appUrl
         const tx = await contract.drawOrder(id);
         await tx.wait();
         const after = await contract.getMemberDetails(id);
-        if (STATUS[Number((await contract.getCircle(id)).status)] !== "Active") continue; // block expired: recommitted
+        if (STATUS[Number((await contract.getCircle(id)).status)] !== "Active") continue; // only scheduled: drawn on a later run
         out.drawn.push({ id, tx: tx.hash });
         out.messages.push(`🎲 "${title}" is full and the payout order has been drawn. First pot goes to ${label(after.addrs[0], after.nicknames[0])}. ${link(id)}`);
       } catch (e) {

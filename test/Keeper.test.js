@@ -1,7 +1,7 @@
 const { expect } = require("chai");
 const { ethers } = require("hardhat");
 const { time, mine } = require("@nomicfoundation/hardhat-network-helpers");
-const { draw } = require("./helpers");
+const { draw, secretOf, commitOf } = require("./helpers");
 const { runKeeper, reminderLead } = require("../scripts/keeper-lib");
 
 const C = ethers.parseEther("1");
@@ -13,9 +13,9 @@ describe("Keeper", function () {
     const [keeper, a, b, c] = await ethers.getSigners();
     const sc = await ethers.deployContract("SavingsCircles");
     await sc.connect(a).createOpenCircle("Weekly Chama", 3, C, WEEK, 0);
-    await sc.connect(a).join(0, "Amina", { value: C });
-    await sc.connect(b).join(0, "Kofi", { value: C });
-    await sc.connect(c).join(0, "", { value: C });
+    await sc.connect(a).join(0, "Amina", commitOf(0, a), { value: C });
+    await sc.connect(b).join(0, "Kofi", commitOf(0, b), { value: C });
+    await sc.connect(c).join(0, "", commitOf(0, c), { value: C });
     await draw(sc, 0);
     return { sc: sc.connect(keeper), keeper, a, b, c };
   }
@@ -79,11 +79,16 @@ describe("Keeper", function () {
   it("draws the payout order of closed circles once the committed block exists", async function () {
     const { sc, a, b } = await setup();
     await sc.connect(a).createCircle("Pair", [a.address, b.address], C, DAY);
-    await sc.connect(a).join(1, "Amina", { value: C });
-    await sc.connect(b).join(1, "Kofi", { value: C });
+    await sc.connect(a).join(1, "Amina", commitOf(1, a), { value: C });
+    await sc.connect(b).join(1, "Kofi", commitOf(1, b), { value: C });
 
     let r = await runKeeper({ contract: sc, now: await nowOf() });
-    expect(r.drawn).to.have.length(0); // too early
+    expect(r.drawn).to.have.length(0); // members are still revealing
+
+    await sc.connect(a).reveal(1, secretOf(1, a));
+    await sc.connect(b).reveal(1, secretOf(1, b));
+    r = await runKeeper({ contract: sc, now: await nowOf() });
+    expect(r.drawn).to.have.length(0); // committed block not mined yet
 
     await mine(6);
     r = await runKeeper({ contract: sc, dryRun: true, now: await nowOf() });
@@ -96,6 +101,27 @@ describe("Keeper", function () {
     expect(r.messages[0]).to.match(/^🎲 "Pair" is full and the payout order has been drawn\. First pot goes to (Amina|Kofi)\./);
   });
 
+  it("reminds members to reveal, and schedules the draw when the deadline passes", async function () {
+    const { sc, a, b } = await setup();
+    await sc.connect(a).createCircle("Pair", [a.address, b.address], C, DAY);
+    await sc.connect(a).join(1, "Amina", commitOf(1, a), { value: C });
+    await sc.connect(b).join(1, "Kofi", commitOf(1, b), { value: C });
+    await sc.connect(a).reveal(1, secretOf(1, a));
+    const deadline = Number((await sc.getDraw(1)).revealDeadline);
+
+    let r = await runKeeper({ contract: sc, now: deadline - 6 * 3600 + 60, interval: 900 });
+    expect(r.messages.join()).to.include('"Pair": 1/2 members have revealed');
+
+    await time.increaseTo(deadline);
+    r = await runKeeper({ contract: sc, now: deadline, interval: 900 });
+    expect((await sc.getDraw(1)).drawBlock).to.be.greaterThan(0); // scheduled, not drawn yet
+    expect(r.drawn).to.have.length(0);
+    await mine(6);
+    r = await runKeeper({ contract: sc, now: await nowOf() });
+    expect(r.drawn.map((d) => d.id)).to.deep.equal([1]);
+    expect((await sc.getCircle(1)).members[0]).to.equal(a.address); // the only revealer goes first
+  });
+
   it("announces completion and dissolution", async function () {
     const { sc, a, b, c } = await setup();
     for (let i = 0; i < 3; i++) {
@@ -105,8 +131,8 @@ describe("Keeper", function () {
     }
     // second circle: c misses twice -> dissolved
     await sc.connect(a).createCircle("Short", [a.address, c.address], C, DAY);
-    await sc.connect(a).join(1, "", { value: C });
-    await sc.connect(c).join(1, "", { value: C });
+    await sc.connect(a).join(1, "", commitOf(1, a), { value: C });
+    await sc.connect(c).join(1, "", commitOf(1, c), { value: C });
     await draw(sc, 1);
     await sc.connect(a).contribute(1, { value: C });
     await time.increase(DAY);

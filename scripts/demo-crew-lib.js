@@ -29,6 +29,14 @@ function crewWallets(secret, provider) {
   ));
 }
 
+/** Each crew member's secret for a circle, recomputed on every run instead of stored. */
+function crewSecret(wallet, id) {
+  return ethers.keccak256(ethers.solidityPacked(["bytes32", "uint256"], [wallet.privateKey, id]));
+}
+function crewCommit(wallet, id) {
+  return ethers.keccak256(ethers.AbiCoder.defaultAbiCoder().encode(["uint256", "address", "bytes32"], [id, wallet.address, crewSecret(wallet, id)]));
+}
+
 /** Fraction of the round after which member `i` pays in round `round`. */
 function payAt(i, round) {
   return SCHEDULE[(i + round) % SCHEDULE.length];
@@ -84,14 +92,25 @@ async function runDemoCrew({ contract, crew, funder, now, appUrl = "", dryRun = 
   if (Number(c.status) === 0) {
     for (const [i, w] of crew.entries()) {
       const m = await contract.getMember(id, w.address);
-      if (!m.joined) await send(`${CREW[i]} joins #${id}`, () => as(w).join(id, CREW[i], { value: c.contribution }));
+      if (!m.joined) await send(`${CREW[i]} joins #${id}`, () => as(w).join(id, CREW[i], crewCommit(w, id), { value: c.contribution }));
     }
     if (dryRun) return out;
     c = await contract.getCircle(id);
   }
 
-  // 3b. closed: draw the payout order once the committed block exists (the keeper does this too)
-  if (Number(c.status) === 4 && (await provider.getBlockNumber()) > Number(await contract.drawBlockOf(id))) {
+  // 3b. closed: reveal, then draw once the committed block exists (the keeper can draw too)
+  if (Number(c.status) === 4) {
+    const draw = await contract.getDraw(id);
+    if (!Number(draw.drawBlock)) {
+      const d = await contract.getMemberDetails(id);
+      for (const [i, addr] of d.addrs.entries()) {
+        const w = crew.find((x) => x.address === addr);
+        if (w && !draw.revealed[i]) await send(`${d.nicknames[i]} reveals for #${id}`, () => as(w).reveal(id, crewSecret(w, id)));
+      }
+    }
+  }
+  if (Number(c.status) === 4 && Number((await contract.getDraw(id)).drawBlock)
+    && (await provider.getBlockNumber()) > Number((await contract.getDraw(id)).drawBlock)) {
     await send(`draw the payout order of #${id}`, () => as(crew[0]).drawOrder(id));
     if (dryRun) return out;
     c = await contract.getCircle(id);
