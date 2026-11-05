@@ -7,12 +7,11 @@ export const NETWORKS = {
     rpc: "https://rpc.ankr.com/electroneum_testnet",
     explorer: "https://testnet-blockexplorer.electroneum.com",
     explorerApi: "https://testnet-blockexplorer.electroneum.com/api",
-    contract: "0x850Aca8d6E879830526dd1cD72919b0E71E0b106",
-    deployBlock: 16103543,
+    contract: "0x70Dc7BbB33eb72b361293B5e0823DcC0eE88aed5",
+    deployBlock: 16135821,
     faucet: "https://faucet.electroneum.com",
-    // Left out of the Explore list (still reachable by link): #1 lost its members' keys,
-    // #5, #6 and #9 were cancelled test circles.
-    hiddenCircles: [1, 5, 6, 9],
+    // Circle ids left out of the Explore list (still reachable by link).
+    hiddenCircles: [],
   },
 };
 

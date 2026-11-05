@@ -15,9 +15,10 @@ Electroneum's users are mainly mobile-first users in emerging markets, which is 
 ## How it works
 
 1. **Create.** An organizer sets the contribution amount and round length, and chooses the circle type:
-   - **Open:** a number of seats that anyone with the link can fill. The payout order is the join order.
-   - **Invite-only:** an exact list of wallet addresses, which is also the payout order.
-2. **Join.** Each member joins by locking a security deposit equal to one contribution, and can add a nickname. The circle starts when every seat is filled. Until then, a member can leave and get their deposit back, and the organizer can cancel the circle and refund everyone.
+   - **Open:** a number of seats that anyone with the link can fill.
+   - **Invite-only:** an exact list of wallet addresses.
+2. **Join.** Each member joins by locking a security deposit equal to one contribution, and can add a nickname. Nobody has a payout slot yet. Until then, a member can leave and get their deposit back, and the organizer can cancel the circle and refund everyone.
+   **Draw.** When the last seat fills, the circle closes and commits to a block 5 blocks ahead. Once that block exists, anyone can call `drawOrder`: its hash shuffles the members into payout slots and round 1 starts. The creator and the order of joining have no influence on the slots, and the result is the same whoever calls it. The keeper runs the draw automatically, and the app shows a button for it.
 3. **Contribute.** Each round, every member pays the contribution before the deadline.
 4. **Settle.** Once everyone has paid or the deadline passes, anyone can settle the round. The full pot is credited to that round's recipient.
 5. **Missed payments.** A member's first missed payment is covered from their deposit, so the recipient still gets the full pot. If a member whose deposit is already used misses again, the circle dissolves: this round's contributions and every unused deposit are refunded.
@@ -77,10 +78,10 @@ npm run demo-crew -- --dry-run     # report what would happen
 | | |
 |---|---|
 | Network | Electroneum Smart Chain testnet (chain ID 5201420) |
-| SavingsCircles (v3) | [`0x850Aca8d6E879830526dd1cD72919b0E71E0b106`](https://testnet-blockexplorer.electroneum.com/address/0x850Aca8d6E879830526dd1cD72919b0E71E0b106) (source verified) |
-| SavingsBadges | [`0xce3a559061F6a5AffC14c61B6Dba85014b2229FA`](https://testnet-blockexplorer.electroneum.com/address/0xce3a559061F6a5AffC14c61B6Dba85014b2229FA) (source verified) |
-| Showcase circles | Seeded by the developer for demonstration. #0 "Nairobi Market Chama": completed, badges awarded. #1 "Accra Family Susu": active, weekly rounds. #2 "ETN Builders Circle": open to anyone. #3 "Trusted Savers Club": open, requires 1+ completed circle. |
-| Previous versions | v2 [`0x689A45c4…3Cb75`](https://testnet-blockexplorer.electroneum.com/address/0x689A45c44430C1b0DEc84132daaC06faE763Cb75), v1 [`0x6DF34bE7…bDEb6F`](https://testnet-blockexplorer.electroneum.com/address/0x6DF34bE78c79C2aEC2D04cEA818DB61De6bDEb6F) (reputation starts fresh in v3) |
+| SavingsCircles (v4) | [`0x70Dc7BbB33eb72b361293B5e0823DcC0eE88aed5`](https://testnet-blockexplorer.electroneum.com/address/0x70Dc7BbB33eb72b361293B5e0823DcC0eE88aed5) (source verified) |
+| SavingsBadges | [`0x4265Fcbf4d636Af9FadEa8c7ddB892acB6a865D6`](https://testnet-blockexplorer.electroneum.com/address/0x4265Fcbf4d636Af9FadEa8c7ddB892acB6a865D6) (source verified) |
+| Demo circle | #0 "Demo: Lagos Traders Ajo", run by the demo crew. Earlier showcase circles remain on v3. |
+| Previous versions | v3 [`0x850Aca8d…E71E0b106`](https://testnet-blockexplorer.electroneum.com/address/0x850Aca8d6E879830526dd1cD72919b0E71E0b106) (first-come and creator-set payout order), v2 [`0x689A45c4…3Cb75`](https://testnet-blockexplorer.electroneum.com/address/0x689A45c44430C1b0DEc84132daaC06faE763Cb75), v1 [`0x6DF34bE7…bDEb6F`](https://testnet-blockexplorer.electroneum.com/address/0x6DF34bE78c79C2aEC2D04cEA818DB61De6bDEb6F) (reputation starts fresh in v3) |
 
 ## Web app
 
@@ -121,7 +122,8 @@ Put your deployer key in `.env` as `PRIVATE_KEY=0x...`. That file is excluded fr
 
 An internal security review with measured findings is in [docs/SECURITY_REVIEW.md](docs/SECURITY_REVIEW.md).
 
-- The deposit covers one missed payment. A member who has already received the pot early in the rotation is only bound by that deposit and their reputation. Track-record circles reduce this risk; larger deposits for newcomers would reduce it further.
+- The deposit covers one missed payment. The draw stops anyone choosing the first slot, but whoever lands there is only bound by that deposit and their reputation after collecting the pot. Stronger collateral is the next contract change.
+- The draw uses a block hash, which is as unpredictable as the chain's validators. A validator who is also a member could try to influence it. A VRF or commit-reveal scheme would remove that trust before mainnet.
 - Reputation can be farmed by running small circles between your own wallets; it costs only gas. Weighting by amount saved, or attestations from known savers, would make it harder to game.
 - Contributions are in native ETN only. A stable-value token option would help with price swings.
 - The contract has tests but has not been externally audited. It needs an audit before mainnet use with real funds.

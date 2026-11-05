@@ -1,8 +1,8 @@
 {
   "etnTestnet": {
-    "SavingsCircles": "0x850Aca8d6E879830526dd1cD72919b0E71E0b106",
-    "deployTx": "0x4303e7b71668ea13fe151897130ef34008345cd7d11a5c3514e909e97abeae57",
-    "deployBlock": 16103543,
+    "SavingsCircles": "0x70Dc7BbB33eb72b361293B5e0823DcC0eE88aed5",
+    "deployTx": "0x40984ed110f48ef21efbdf6750038908b25de516dfc249b00b0f79a0096c1872",
+    "deployBlock": 16135821,
     "history": [
       {
         "SavingsCircles": "0x6DF34bE78c79C2aEC2D04cEA818DB61De6bDEb6F",
@@ -17,6 +17,11 @@
         "SavingsCircles": "0x850Aca8d6E879830526dd1cD72919b0E71E0b106",
         "deployTx": "0x4303e7b71668ea13fe151897130ef34008345cd7d11a5c3514e909e97abeae57",
         "deployBlock": 16103543
+      },
+      {
+        "SavingsCircles": "0x70Dc7BbB33eb72b361293B5e0823DcC0eE88aed5",
+        "deployTx": "0x40984ed110f48ef21efbdf6750038908b25de516dfc249b00b0f79a0096c1872",
+        "deployBlock": 16135821
       }
     ]
   }
