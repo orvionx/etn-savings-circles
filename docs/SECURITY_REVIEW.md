@@ -1,6 +1,6 @@
 # Security review: ETN Savings Circles
 
-> **Update, 6 November 2026 (v4):** following review by the Electroneum team, payout slots are now drawn on-chain after a circle fills, so creators and early joiners can no longer pick the first slot. See SC-07 and SC-10. The rest of this document describes the v3 review; SC-01 and SC-02 remain open in v4.
+> **Update, 6 November 2026 (v5):** following review by the Electroneum team, payout slots are now drawn on-chain after a circle fills, from member secrets (commit/reveal) combined with a future block hash, so creators and early joiners can no longer pick the first slot. See SC-07 and SC-10. The rest of this document describes the v3 review; SC-01 and SC-02 remain open in v5.
 
 **Date:** 4 November 2026
 **Scope:** `contracts/SavingsCircles.sol` and `contracts/SavingsBadges.sol` (v3, testnet deployment `0x850Aca8d6E879830526dd1cD72919b0E71E0b106`), the keeper and demo-crew bots (`scripts/`), and the web app's hosting configuration.
@@ -20,10 +20,10 @@ The main risks are economic and come from the rotating-savings model itself. Two
 | SC-04 | No Content-Security-Policy on the web app | Low | Fixed |
 | SC-05 | App and bot copy overstated what deposits protect | Low | Fixed |
 | SC-06 | Rounds only advance when someone settles them | Info | Accepted |
-| SC-07 | The creator or first joiner decides who gets the first slot | Medium (raised from Info by the Electroneum team's review) | Fixed in v4 |
+| SC-07 | The creator or first joiner decides who gets the first slot | Medium (raised from Info by the Electroneum team's review) | Fixed in v5 |
 | SC-08 | Gas cost of finishing a 50-member circle | Info | Checked: fine |
 | SC-09 | Contract cannot be paused or upgraded | Info | Accepted |
-| SC-10 | The v4 draw relies on a block hash | Low | Open: decide before mainnet |
+| SC-10 | How unpredictable the draw is | Low | Mitigated in v5 |
 
 ## Findings
 
@@ -75,11 +75,11 @@ The home page said "Deposits protect every member", and the bot's dissolve messa
 
 `settleRound` must be called after every round. Anyone can call it, and the keeper does so every 15 minutes, so a missing keeper delays a circle but never locks funds. The next deadline is measured from settlement time, so a late settlement makes the next round longer.
 
-### SC-07 · Medium · The creator or first joiner decides who gets the first slot (fixed in v4)
+### SC-07 · Medium · The creator or first joiner decides who gets the first slot (fixed in v5)
 
 **What happened.** In v3, the creator of an invite-only circle set the payout order, and in an open circle the order was first come, first served. Our review rated this as Info because the order was visible before joining. The Electroneum team pointed out that this isn't trustless: the first slot is the valuable one, and with SC-01 it is the one that can be exploited.
 
-**Fix.** In v4, nobody has a slot while a circle is forming. Filling the last seat closes the circle and commits to a block 5 blocks ahead. `drawOrder` then shuffles the members with that block's hash. Anyone can call it, and the result is the same whoever does. Joining, leaving and cancelling are all blocked between closing and the draw. Tested in `test/SavingsCircles.test.js` and `test/SecurityReview.test.js`, including an independent recomputation of the shuffle.
+**Fix.** In v5, nobody has a slot while a circle is forming. Each member commits to a secret when joining. Filling the last seat closes the circle, and members reveal within a day. The contract then commits to a block 5 blocks ahead, and `drawOrder` shuffles the members using the XOR of the revealed secrets and that block's hash. Anyone can call it, and the result is the same whoever does. Joining, leaving and cancelling are all blocked between closing and the draw. Tested in `test/SavingsCircles.test.js` and `test/SecurityReview.test.js`, including an independent recomputation of the shuffle.
 
 **What this doesn't fix.** One person joining with several wallets gets better odds of an early slot, though each wallet needs a deposit and must keep paying. Whoever lands in the first slot can still default (SC-01).
 
@@ -91,9 +91,11 @@ The final settlement of a circle returns every deposit and mints a badge for eac
 
 The contract has no owner, so no admin key can move or freeze funds. The trade-off is that a bug can only be fixed by deploying a new version and having users move to it. For mainnet, consider a narrowly scoped emergency pause that can only stop new circles and never touches existing funds.
 
-### SC-10 · Low · The v4 draw relies on a block hash
+### SC-10 · Low · How unpredictable the draw is (mitigated in v5)
 
-The draw is only as unpredictable as the block hash. A member can't know it when they join, but a validator producing the committed block has some influence over it, which matters if a validator is also a member of the circle. `blockhash` also only reaches back 256 blocks (about 21 minutes). If nobody draws in time, `drawOrder` commits to a new block, so a member who dislikes the pending result could gain a re-roll only if nobody at all draws for that long. The keeper and the app's draw button make that unlikely. Before mainnet, decide with the Electroneum team whether to keep this, or use a VRF or commit-reveal scheme.
+ETN has no VRF, so the draw combines two sources. A validator can't predict the result without the members' secrets, and a member can't work it out without the future block, so the last member to reveal can't see the outcome before deciding whether to reveal. Commits include the member's address, so one can't be copied. Members who don't reveal by the deadline go to the end of the order, which follows the deadline-and-forfeit approach of the Electroneum team's Core Clash contract.
+
+Remaining limits: a member who controls a validator and also learns every secret before the committed block could still influence the draw, which needs a trusted validator to misbehave. One person with several wallets can withhold a reveal from one wallet to change the draw blindly, at the cost of sending that wallet last. `blockhash` only reaches back 256 blocks (about 21 minutes), so if nobody draws in time, `drawOrder` commits to a new block. That gives a re-roll only if nobody at all draws for that long; the keeper and the app's draw button make that unlikely.
 
 ## Checked and found sound
 

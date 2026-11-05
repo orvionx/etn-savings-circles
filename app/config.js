@@ -7,8 +7,8 @@ export const NETWORKS = {
     rpc: "https://rpc.ankr.com/electroneum_testnet",
     explorer: "https://testnet-blockexplorer.electroneum.com",
     explorerApi: "https://testnet-blockexplorer.electroneum.com/api",
-    contract: "0x70Dc7BbB33eb72b361293B5e0823DcC0eE88aed5",
-    deployBlock: 16135821,
+    contract: "0x9dF0D98BEf8c835f17d713488fA18aAf6677AB89",
+    deployBlock: 16136197,
     faucet: "https://faucet.electroneum.com",
     // Circle ids left out of the Explore list (still reachable by link).
     hiddenCircles: [],

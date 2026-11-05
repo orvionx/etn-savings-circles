@@ -17,8 +17,8 @@ Electroneum's users are mainly mobile-first users in emerging markets, which is 
 1. **Create.** An organizer sets the contribution amount and round length, and chooses the circle type:
    - **Open:** a number of seats that anyone with the link can fill.
    - **Invite-only:** an exact list of wallet addresses.
-2. **Join.** Each member joins by locking a security deposit equal to one contribution, and can add a nickname. Nobody has a payout slot yet. Until then, a member can leave and get their deposit back, and the organizer can cancel the circle and refund everyone.
-   **Draw.** When the last seat fills, the circle closes and commits to a block 5 blocks ahead. Once that block exists, anyone can call `drawOrder`: its hash shuffles the members into payout slots and round 1 starts. The creator and the order of joining have no influence on the slots, and the result is the same whoever calls it. The keeper runs the draw automatically, and the app shows a button for it.
+2. **Join.** Each member joins by locking a security deposit equal to one contribution and committing to a secret, and can add a nickname. Nobody has a payout slot yet. Until then, a member can leave and get their deposit back, and the organizer can cancel the circle and refund everyone.
+   **Draw.** When the last seat fills, the circle closes and members have a day to reveal their secrets. Once everyone has revealed, or the deadline passes, the contract commits to a block 5 blocks ahead. When that block exists, anyone can call `drawOrder`: the secrets and the block's hash together shuffle the members into payout slots, and round 1 starts. Members who didn't reveal go after those who did. The creator and the order of joining have no influence, a validator can't predict the result without the secrets, and the last member to reveal can't work out the result without the future block. In the app, the secret comes from one free wallet signature, so there's nothing to write down. The commit/reveal deadline follows the approach used in Core Clash, suggested by the Electroneum team.
 3. **Contribute.** Each round, every member pays the contribution before the deadline.
 4. **Settle.** Once everyone has paid or the deadline passes, anyone can settle the round. The full pot is credited to that round's recipient.
 5. **Missed payments.** A member's first missed payment is covered from their deposit, so the recipient still gets the full pot. If a member whose deposit is already used misses again, the circle dissolves: this round's contributions and every unused deposit are refunded.
@@ -78,10 +78,10 @@ npm run demo-crew -- --dry-run     # report what would happen
 | | |
 |---|---|
 | Network | Electroneum Smart Chain testnet (chain ID 5201420) |
-| SavingsCircles (v4) | [`0x70Dc7BbB33eb72b361293B5e0823DcC0eE88aed5`](https://testnet-blockexplorer.electroneum.com/address/0x70Dc7BbB33eb72b361293B5e0823DcC0eE88aed5) (source verified) |
-| SavingsBadges | [`0x4265Fcbf4d636Af9FadEa8c7ddB892acB6a865D6`](https://testnet-blockexplorer.electroneum.com/address/0x4265Fcbf4d636Af9FadEa8c7ddB892acB6a865D6) (source verified) |
+| SavingsCircles (v5) | [`0x9dF0D98BEf8c835f17d713488fA18aAf6677AB89`](https://testnet-blockexplorer.electroneum.com/address/0x9dF0D98BEf8c835f17d713488fA18aAf6677AB89) (source verified) |
+| SavingsBadges | [`0x5Ec2cA3f71103c4114257b34a439FfF9754ee364`](https://testnet-blockexplorer.electroneum.com/address/0x5Ec2cA3f71103c4114257b34a439FfF9754ee364) (source verified) |
 | Demo circle | #0 "Demo: Lagos Traders Ajo", run by the demo crew. Earlier showcase circles remain on v3. |
-| Previous versions | v3 [`0x850Aca8d…E71E0b106`](https://testnet-blockexplorer.electroneum.com/address/0x850Aca8d6E879830526dd1cD72919b0E71E0b106) (first-come and creator-set payout order), v2 [`0x689A45c4…3Cb75`](https://testnet-blockexplorer.electroneum.com/address/0x689A45c44430C1b0DEc84132daaC06faE763Cb75), v1 [`0x6DF34bE7…bDEb6F`](https://testnet-blockexplorer.electroneum.com/address/0x6DF34bE78c79C2aEC2D04cEA818DB61De6bDEb6F) (reputation starts fresh in v3) |
+| Previous versions | v4 [`0x70Dc7BbB…eE88aed5`](https://testnet-blockexplorer.electroneum.com/address/0x70Dc7BbB33eb72b361293B5e0823DcC0eE88aed5) (block hash only draw), v3 [`0x850Aca8d…E71E0b106`](https://testnet-blockexplorer.electroneum.com/address/0x850Aca8d6E879830526dd1cD72919b0E71E0b106) (first-come and creator-set payout order), v2 [`0x689A45c4…3Cb75`](https://testnet-blockexplorer.electroneum.com/address/0x689A45c44430C1b0DEc84132daaC06faE763Cb75), v1 [`0x6DF34bE7…bDEb6F`](https://testnet-blockexplorer.electroneum.com/address/0x6DF34bE78c79C2aEC2D04cEA818DB61De6bDEb6F) (reputation starts fresh in v3) |
 
 ## Web app
 
@@ -113,7 +113,6 @@ Every push runs the contract tests and the end-to-end browser tests on GitHub Ac
 npm install --legacy-peer-deps
 npx hardhat test                                                # run tests
 npx hardhat run scripts/deploy-savings.js --network etnTestnet  # deploy
-npx hardhat run scripts/demo-circle.js --network etnTestnet     # seed showcase circles
 ```
 
 Put your deployer key in `.env` as `PRIVATE_KEY=0x...`. That file is excluded from git.
@@ -123,7 +122,7 @@ Put your deployer key in `.env` as `PRIVATE_KEY=0x...`. That file is excluded fr
 An internal security review with measured findings is in [docs/SECURITY_REVIEW.md](docs/SECURITY_REVIEW.md).
 
 - The deposit covers one missed payment. The draw stops anyone choosing the first slot, but whoever lands there is only bound by that deposit and their reputation after collecting the pot. Stronger collateral is the next contract change.
-- The draw uses a block hash, which is as unpredictable as the chain's validators. A validator who is also a member could try to influence it. A VRF or commit-reveal scheme would remove that trust before mainnet.
+- One person with several wallets gets better odds of an early slot, and can withhold a reveal from one wallet to change the draw, at the cost of sending that wallet to the end of the order. Each wallet needs its own deposit and must keep paying.
 - Reputation can be farmed by running small circles between your own wallets; it costs only gas. Weighting by amount saved, or attestations from known savers, would make it harder to game.
 - Contributions are in native ETN only. A stable-value token option would help with price swings.
 - The contract has tests but has not been externally audited. It needs an audit before mainnet use with real funds.
