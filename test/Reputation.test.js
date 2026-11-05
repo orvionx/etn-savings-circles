@@ -1,6 +1,7 @@
 const { expect } = require("chai");
 const { ethers } = require("hardhat");
 const { time } = require("@nomicfoundation/hardhat-network-helpers");
+const { draw, inPayoutOrder } = require("./helpers");
 
 const C = ethers.parseEther("0.1");
 const DAY = 24 * 60 * 60;
@@ -23,6 +24,7 @@ describe("Reputation & badges", function () {
     const id = await sc.circleCount();
     await sc.createCircle(name, members.map((m) => m.address), C, DAY);
     for (const m of members) await sc.connect(m).join(id, "", { value: C });
+    await draw(sc, id);
     for (let r = 0; r < members.length; r++) {
       for (const [i, m] of members.entries()) {
         if (skip.some(([sr, si]) => sr === r && si === i)) continue;
@@ -60,6 +62,7 @@ describe("Reputation & badges", function () {
     await sc.createCircle("Second", [a.address, c.address], C, DAY);
     await sc.connect(a).join(1, "", { value: C });
     await sc.connect(c).join(1, "", { value: C });
+    await draw(sc, 1);
     await sc.connect(a).contribute(1, { value: C });
     await time.increase(DAY); await sc.settleRound(1);
     await sc.connect(a).contribute(1, { value: C });
@@ -107,6 +110,7 @@ describe("Reputation & badges", function () {
       await sc.createCircle("Bad", [a.address, b.address], C, DAY);
       await sc.connect(a).join(1, "", { value: C });
       await sc.connect(b).join(1, "", { value: C });
+      await draw(sc, 1);
       await sc.connect(a).contribute(1, { value: C });
       await time.increase(DAY); await sc.settleRound(1);
       await sc.connect(a).contribute(1, { value: C });
@@ -132,16 +136,18 @@ describe("Reputation & badges", function () {
       const id = await sc.circleCount();
       await sc.createCircle("Chama", [a, b, c].map((m) => m.address), C, DAY);
       for (const m of [a, b, c]) await sc.connect(m).join(id, "", { value: C });
+      await draw(sc, id);
+      const order = await inPayoutOrder(sc, id, [a, b, c]);
       for (let r = 0; r < 2; r++) { for (const m of [a, b, c]) await sc.connect(m).contribute(id, { value: C }); await sc.settleRound(id); }
       for (const m of [a, b, c]) await sc.connect(m).contribute(id, { value: C });
       await expect(sc.settleRound(id))
-        .to.emit(sc, "BadgeAwarded").withArgs(id, a.address, 1n)
-        .and.to.emit(sc, "BadgeAwarded").withArgs(id, c.address, 3n);
+        .to.emit(sc, "BadgeAwarded").withArgs(id, order[0].address, 1n)
+        .and.to.emit(sc, "BadgeAwarded").withArgs(id, order[2].address, 3n);
 
       expect(await badges.totalSupply()).to.equal(3n);
-      expect(await badges.ownerOf(2n)).to.equal(b.address);
-      expect(await badges.tokensOf(a.address)).to.deep.equal([1n]);
-      expect(await badges.balanceOf(c.address)).to.equal(1n);
+      expect(await badges.ownerOf(2n)).to.equal(order[1].address);
+      expect(await badges.tokensOf(order[0].address)).to.deep.equal([1n]);
+      expect(await badges.balanceOf(order[2].address)).to.equal(1n);
       expect(await badges.name()).to.equal("ETN Savings Circle Badge");
     });
 
@@ -159,8 +165,9 @@ describe("Reputation & badges", function () {
       const tricky = `Kibera "Mama's" <Chama> & \\ Friends`;
       await runCircle(sc, [a, b, c], tricky, [[1, 2]]);
 
-      const meta = JSON.parse(decodeDataUri(await badges.tokenURI(1n), "data:application/json;base64,"));
-      expect(meta.name).to.equal("Savings Circle Badge #1");
+      const aBadge = (await badges.tokensOf(a.address))[0];
+      const meta = JSON.parse(decodeDataUri(await badges.tokenURI(aBadge), "data:application/json;base64,"));
+      expect(meta.name).to.equal(`Savings Circle Badge #${aBadge}`);
       expect(meta.description).to.include(tricky);
       const attrs = Object.fromEntries(meta.attributes.map((x) => [x.trait_type, x.value]));
       expect(attrs).to.deep.include({ Circle: tricky, "Circle ID": 0, Rounds: 3, "Contribution (ETN)": "0.1", "Missed payments": 0, "Perfect record": "Yes" });
@@ -170,7 +177,8 @@ describe("Reputation & badges", function () {
       expect(svg).to.include("PERFECT RECORD");
       expect(svg).not.to.include("<Chama>");
 
-      const missed = JSON.parse(decodeDataUri(await badges.tokenURI(3n), "data:application/json;base64,"));
+      const cBadge = (await badges.tokensOf(c.address))[0];
+      const missed = JSON.parse(decodeDataUri(await badges.tokenURI(cBadge), "data:application/json;base64,"));
       expect(missed.attributes.find((x) => x.trait_type === "Perfect record").value).to.equal("No");
       expect(decodeDataUri(missed.image, "data:image/svg+xml;base64,")).to.include("COMPLETED");
       await expect(badges.tokenURI(99n)).to.be.revertedWithCustomError(badges, "ERC721NonexistentToken");
@@ -184,6 +192,7 @@ describe("Reputation & badges", function () {
         const id = await sc.circleCount();
         await sc.createCircle("Amt", [a.address, b.address], v, DAY);
         await sc.connect(a).join(id, "", { value: v }); await sc.connect(b).join(id, "", { value: v });
+        await draw(sc, id);
         for (let r = 0; r < 2; r++) { await sc.connect(a).contribute(id, { value: v }); await sc.connect(b).contribute(id, { value: v }); await sc.settleRound(id); }
         const supply = await badges.totalSupply();
         const meta = JSON.parse(decodeDataUri(await badges.tokenURI(supply), "data:application/json;base64,"));

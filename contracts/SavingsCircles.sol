@@ -3,24 +3,28 @@ pragma solidity ^0.8.24;
 
 import {SavingsBadges} from "./SavingsBadges.sol";
 
-/// @title ETN Savings Circles (v3)
+/// @title ETN Savings Circles (v4)
 /// @notice On-chain rotating savings and credit associations (ROSCAs, also known as
 ///         chamas, susus, tontines or stokvels) using native ETN.
 ///
 /// How it works:
 ///  1. A creator sets up a circle with a fixed contribution and round length, either
-///     - invite-only: an ordered member list (the payout order), or
-///     - open: a number of seats that anyone can fill; payout order is join order.
+///     - invite-only: a list of member addresses, or
+///     - open: a number of seats that anyone can fill.
 ///  2. Members join by locking a security deposit equal to one contribution, with an
-///     optional nickname. Before the circle starts a member can leave and get the
-///     deposit back. The circle starts once every seat is filled.
-///  3. Each round, every member contributes. When everyone has paid (or the round
+///     optional nickname. Nobody has a payout slot yet. Before the circle closes a
+///     member can leave and get the deposit back.
+///  3. When the last seat is filled the circle closes and commits to a future block.
+///     Once that block exists, anyone can call drawOrder(): its hash shuffles the
+///     members into payout slots and round 1 starts. Neither the creator nor the order
+///     of joining has any influence on the slots.
+///  4. Each round, every member contributes. When everyone has paid (or the round
 ///     deadline passes), anyone can settle the round and the whole pot is credited to
 ///     that round's recipient.
-///  4. A member who misses a payment has it covered by their deposit, once. A second
+///  5. A member who misses a payment has it covered by their deposit, once. A second
 ///     miss by a member whose deposit is used up dissolves the circle: this round's
 ///     contributions and all remaining deposits are refunded.
-///  5. After the last round, every remaining deposit is returned and every member
+///  6. After the last round, every remaining deposit is returned and every member
 ///     receives a soulbound badge NFT.
 ///
 /// Reputation: the contract records each address's savings history (circles completed,
@@ -29,7 +33,7 @@ import {SavingsBadges} from "./SavingsBadges.sol";
 ///
 /// All payouts use the pull pattern: amounts are credited and claimed with withdraw().
 contract SavingsCircles {
-    enum Status { Forming, Active, Completed, Cancelled }
+    enum Status { Forming, Active, Completed, Cancelled, Drawing }
 
     struct Circle {
         address creator;
@@ -43,8 +47,9 @@ contract SavingsCircles {
         Status status;
         bool open;          // anyone may join (payout order = join order)
         uint32 minCompleted; // open circles: completed circles required to join (0 = anyone)
+        uint64 drawBlock;   // block whose hash decides the payout order (0 = circle not closed yet)
         string name;
-        address[] members;  // payout order (open circles: joined members only)
+        address[] members;  // payout order once drawn (open circles: joined members only)
     }
 
     struct MemberState {
@@ -70,6 +75,8 @@ contract SavingsCircles {
     uint256 public constant MAX_NICKNAME_LENGTH = 32;
     uint64 public constant MIN_ROUND_DURATION = 1 minutes;
     uint64 public constant MAX_ROUND_DURATION = 365 days;
+    /// @notice Blocks between closing a circle and the block whose hash draws its payout order.
+    uint64 public constant DRAW_DELAY = 5;
 
     uint256 public circleCount;
     uint256 public totalPaidOut;
@@ -90,6 +97,8 @@ contract SavingsCircles {
     event MemberJoined(uint256 indexed id, address indexed member, string nickname);
     event MemberLeft(uint256 indexed id, address indexed member);
     event NicknameSet(uint256 indexed id, address indexed member, string nickname);
+    event CircleClosed(uint256 indexed id, uint64 drawBlock);
+    event PayoutOrderDrawn(uint256 indexed id, bytes32 seed);
     event CircleStarted(uint256 indexed id, uint64 firstDeadline);
     event Contributed(uint256 indexed id, uint32 indexed round, address indexed member);
     event DepositUsed(uint256 indexed id, uint32 indexed round, address indexed member);
@@ -121,6 +130,7 @@ contract SavingsCircles {
     error Reentrancy();
     error NotEligible();
     error InvalidRequirement();
+    error DrawNotReady();
 
     constructor() {
         badges = new SavingsBadges();
@@ -135,7 +145,7 @@ contract SavingsCircles {
 
     // ---------------------------------------------------------------- setup
 
-    /// @notice Create an invite-only circle. `members` is the payout order.
+    /// @notice Create an invite-only circle. The order of `members` has no effect on payouts.
     function createCircle(
         string calldata name,
         address[] calldata members,
@@ -157,7 +167,7 @@ contract SavingsCircles {
         }
     }
 
-    /// @notice Create an open circle with `size` seats. Anyone may join; payout order is join order.
+    /// @notice Create an open circle with `size` seats. Anyone may join.
     /// @param minCompleted Track record required to join: at least this many completed
     ///        circles and no defaults. 0 lets anyone join.
     function createOpenCircle(
@@ -183,7 +193,7 @@ contract SavingsCircles {
 
         if (c.open) {
             if (!isEligible(id, msg.sender)) revert NotEligible();
-            // A forming open circle always has a free seat (it starts when full).
+            // A forming open circle always has a free seat (it closes when full).
             s.invited = true;
             c.members.push(msg.sender);
             if (msg.sender != c.creator) userCircles[msg.sender].push(id);
@@ -197,13 +207,44 @@ contract SavingsCircles {
         emit MemberJoined(id, msg.sender, nickname);
 
         if (++c.joinedCount == c.size) {
-            c.status = Status.Active;
-            c.roundDeadline = uint64(block.timestamp) + c.roundDuration;
-            emit CircleStarted(id, c.roundDeadline);
+            c.status = Status.Drawing;
+            c.drawBlock = uint64(block.number) + DRAW_DELAY;
+            emit CircleClosed(id, c.drawBlock);
         }
     }
 
-    /// @notice Leave a circle that has not started yet. The deposit is refunded.
+    /// @notice Draw the payout order of a closed circle and start round 1. Callable by
+    ///         anyone once the committed block exists. The result depends only on that
+    ///         block's hash, so the caller cannot influence it.
+    /// @dev blockhash() only reaches back 256 blocks. If nobody drew in time, this
+    ///      commits to a new future block instead, and a later call completes the draw.
+    function drawOrder(uint256 id) external {
+        Circle storage c = _circle(id);
+        if (c.status != Status.Drawing) revert WrongStatus();
+        if (block.number <= c.drawBlock) revert DrawNotReady();
+
+        bytes32 hash = blockhash(c.drawBlock);
+        if (hash == bytes32(0)) {
+            c.drawBlock = uint64(block.number) + DRAW_DELAY;
+            emit CircleClosed(id, c.drawBlock);
+            return;
+        }
+
+        // Fisher-Yates shuffle
+        bytes32 seed = keccak256(abi.encode(hash, id));
+        address[] storage ms = c.members;
+        for (uint256 i = ms.length - 1; i > 0; --i) {
+            uint256 j = uint256(keccak256(abi.encode(seed, i))) % (i + 1);
+            (ms[i], ms[j]) = (ms[j], ms[i]);
+        }
+        emit PayoutOrderDrawn(id, seed);
+
+        c.status = Status.Active;
+        c.roundDeadline = uint64(block.timestamp) + c.roundDuration;
+        emit CircleStarted(id, c.roundDeadline);
+    }
+
+    /// @notice Leave a circle that has not closed yet. The deposit is refunded.
     function leave(uint256 id) external {
         Circle storage c = _circle(id);
         if (c.status != Status.Forming) revert WrongStatus();
@@ -229,7 +270,7 @@ contract SavingsCircles {
         emit MemberLeft(id, msg.sender);
     }
 
-    /// @notice The creator can cancel a circle that has not started yet. Deposits are refunded.
+    /// @notice The creator can cancel a circle that has not closed yet. Deposits are refunded.
     function cancelForming(uint256 id) external {
         Circle storage c = _circle(id);
         if (msg.sender != c.creator) revert NotCreator();
@@ -357,7 +398,7 @@ contract SavingsCircles {
             c.size, c.joinedCount, c.paidCount, c.status, c.open, c.members);
     }
 
-    /// @notice Per-member details for a whole circle in one call, in payout order.
+    /// @notice Per-member details for a whole circle in one call, in payout order once drawn.
     function getMemberDetails(uint256 id)
         external
         view
@@ -412,6 +453,11 @@ contract SavingsCircles {
     {
         Reputation storage r = reputations[account];
         return (r.joined, r.completed, r.onTimePayments, r.missedPayments, r.defaulted);
+    }
+
+    /// @notice The block whose hash draws the payout order. 0 until the circle closes.
+    function drawBlockOf(uint256 id) external view returns (uint64) {
+        return _circle(id).drawBlock;
     }
 
     function nameOf(uint256 id) external view returns (string memory) {
