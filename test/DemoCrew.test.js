@@ -1,6 +1,6 @@
 const { expect } = require("chai");
 const { ethers } = require("hardhat");
-const { time } = require("@nomicfoundation/hardhat-network-helpers");
+const { time, mine } = require("@nomicfoundation/hardhat-network-helpers");
 const { runDemoCrew, crewWallets, payAt } = require("../scripts/demo-crew-lib");
 const { runKeeper } = require("../scripts/keeper-lib");
 
@@ -13,7 +13,8 @@ describe("Demo crew", function () {
     const crew = crewWallets(ethers.id("test secret"), ethers.provider);
     const nowOf = async () => (await ethers.provider.getBlock("latest")).timestamp;
     const run = async () => runDemoCrew({ contract: sc, crew, funder, now: await nowOf() });
-    return { sc: sc.connect(funder), crew, funder, run, nowOf };
+    const start = async () => { const r = await run(); await mine(6); await run(); return r; }; // create + join, then draw
+    return { sc: sc.connect(funder), crew, funder, run, start, nowOf };
   }
 
   it("derives the same wallets from the same secret", function () {
@@ -26,8 +27,8 @@ describe("Demo crew", function () {
   });
 
   it("funds the crew and starts a clearly labelled demo circle", async function () {
-    const { sc, crew, run } = await setup();
-    const r = await run();
+    const { sc, crew, start } = await setup();
+    const r = await start();
     expect(r.circle).to.equal(0);
     expect(r.messages[0]).to.match(/^🆕 New demo circle "Demo: Lagos Traders Ajo"/);
     const c = await sc.getCircle(0);
@@ -39,8 +40,8 @@ describe("Demo crew", function () {
   });
 
   it("pays on a staggered schedule, rotating the late payer each round", async function () {
-    const { sc, run } = await setup();
-    await run();
+    const { sc, run, start } = await setup();
+    await start();
     await time.increase(Math.ceil(DAY * 0.7));
     await run();
     let d = await sc.getMemberDetails(0);
@@ -60,8 +61,8 @@ describe("Demo crew", function () {
   });
 
   it("runs a whole circle to completion, collects payouts and starts the next one", async function () {
-    const { sc, crew, run } = await setup();
-    await run();
+    const { sc, crew, run, start } = await setup();
+    await start();
     for (let round = 0; round < 5; round++) {
       await time.increase(Math.ceil(DAY * 0.9));
       await run();

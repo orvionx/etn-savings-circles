@@ -4,7 +4,7 @@
 // The wallets are derived from a secret (the keeper key), so no extra secret is needed
 // and every scheduled run controls the same addresses. Each run:
 //   1. tops up crew wallets that run low (from the funder wallet)
-//   2. starts a new demo circle when the crew has none running
+//   2. starts a new demo circle when the crew has none running, and draws its payout order
 //   3. pays this round's contributions on a staggered schedule, so reminders and
 //      late payers show up naturally before the keeper settles the round
 //   4. withdraws any payouts back into the crew wallets
@@ -62,12 +62,12 @@ async function runDemoCrew({ contract, crew, funder, now, appUrl = "", dryRun = 
     }
   }
 
-  // 2. find the crew's running circle (forming or active), or start one
+  // 2. find the crew's running circle (forming, drawing or active), or start one
   const ids = (await contract.getUserCircles(crew[0].address)).map(Number);
   let id = null, c = null;
   for (const cid of ids.slice().reverse()) {
     const info = await contract.getCircle(cid);
-    if (Number(info.status) <= 1 && info.name.startsWith("Demo:")) { id = cid; c = info; break; }
+    if (![2, 3].includes(Number(info.status)) && info.name.startsWith("Demo:")) { id = cid; c = info; break; }
   }
   if (id === null) {
     const run = ids.length + 1;
@@ -80,7 +80,7 @@ async function runDemoCrew({ contract, crew, funder, now, appUrl = "", dryRun = 
   }
   out.circle = id;
 
-  // 3a. forming: everyone joins (the last join starts round 1)
+  // 3a. forming: everyone joins (the last join closes the circle)
   if (Number(c.status) === 0) {
     for (const [i, w] of crew.entries()) {
       const m = await contract.getMember(id, w.address);
@@ -90,7 +90,15 @@ async function runDemoCrew({ contract, crew, funder, now, appUrl = "", dryRun = 
     c = await contract.getCircle(id);
   }
 
-  // 3b. active: pay on the staggered schedule
+  // 3b. closed: draw the payout order once the committed block exists (the keeper does this too)
+  if (Number(c.status) === 4 && (await provider.getBlockNumber()) > Number(await contract.drawBlockOf(id))) {
+    await send(`draw the payout order of #${id}`, () => as(crew[0]).drawOrder(id));
+    if (dryRun) return out;
+    c = await contract.getCircle(id);
+    now = (await provider.getBlock("latest")).timestamp;
+  }
+
+  // 3c. active: pay on the staggered schedule
   if (Number(c.status) === 1) {
     const deadline = Number(c.roundDeadline), duration = Number(c.roundDuration), round = Number(c.round);
     const progress = (now - (deadline - duration)) / duration;

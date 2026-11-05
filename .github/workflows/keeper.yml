@@ -1,6 +1,6 @@
 name: Keeper
 
-# Keeps the demo circle going, settles rounds that are due and posts reminders.
+# Keeps the demo circle going, draws payout orders, settles rounds that are due and posts reminders.
 on:
   schedule:
     - cron: "*/15 * * * *"

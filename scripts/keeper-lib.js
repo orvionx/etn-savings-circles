@@ -1,9 +1,9 @@
-// Keeper logic for ETN Savings Circles: settles rounds that are due and produces
+// Keeper logic for ETN Savings Circles: draws payout orders, settles rounds that are due and produces
 // reminder / announcement messages. Stateless, so it can run on a schedule
 // (e.g. every 15 minutes on GitHub Actions) without a database.
 const { ethers } = require("ethers");
 
-const STATUS = ["Forming", "Active", "Completed", "Cancelled"];
+const STATUS = ["Forming", "Active", "Completed", "Cancelled", "Drawing"];
 
 const fmt = (wei) => {
   const s = ethers.formatEther(wei);
@@ -40,19 +40,42 @@ function reminderLead(roundDuration) {
  * @param {boolean} [opts.dryRun]          don't send transactions
  * @param {string} [opts.appUrl]           base URL used in messages
  * @param {number} [opts.lookback]         how many of the newest circles to scan
- * @returns {Promise<{settled: object[], reminders: object[], messages: string[], scanned: number}>}
+ * @returns {Promise<{drawn: object[], settled: object[], reminders: object[], messages: string[], scanned: number}>}
  */
 async function runKeeper({ contract, now, interval = 900, dryRun = false, appUrl = "", lookback = 500 }) {
   const runner = contract.runner;
   const provider = runner.provider ?? runner;
   if (now === undefined) now = (await provider.getBlock("latest")).timestamp;
   const count = Number(await contract.circleCount());
-  const out = { settled: [], reminders: [], messages: [], scanned: 0 };
+  const block = await provider.getBlockNumber();
+  const out = { drawn: [], settled: [], reminders: [], messages: [], scanned: 0 };
   const link = (id) => (appUrl ? `${appUrl.replace(/\/$/, "")}/#/circle/${id}` : `circle #${id}`);
 
   for (let id = Math.max(0, count - lookback); id < count; id++) {
     const c = await contract.getCircle(id);
-    if (STATUS[Number(c.status)] !== "Active") continue;
+    const status = STATUS[Number(c.status)];
+    if (status === "Drawing") {
+      if (block <= Number(await contract.drawBlockOf(id))) continue; // committed block not mined yet
+      const title = safeText(c.name, `Circle #${id}`);
+      if (dryRun) {
+        out.drawn.push({ id, dryRun: true });
+        out.messages.push(`[dry run] would draw the payout order of "${title}"`);
+        continue;
+      }
+      try {
+        await contract.drawOrder.staticCall(id);
+        const tx = await contract.drawOrder(id);
+        await tx.wait();
+        const after = await contract.getMemberDetails(id);
+        if (STATUS[Number((await contract.getCircle(id)).status)] !== "Active") continue; // block expired: recommitted
+        out.drawn.push({ id, tx: tx.hash });
+        out.messages.push(`🎲 "${title}" is full and the payout order has been drawn. First pot goes to ${label(after.addrs[0], after.nicknames[0])}. ${link(id)}`);
+      } catch (e) {
+        out.messages.push(`❌ Could not draw the payout order of "${title}": ${e.shortMessage || e.message}`);
+      }
+      continue;
+    }
+    if (status !== "Active") continue;
     out.scanned++;
     const d = await contract.getMemberDetails(id);
     const n = d.addrs.length;

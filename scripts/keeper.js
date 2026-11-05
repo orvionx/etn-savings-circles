@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Savings Circles keeper: settles due rounds and posts reminders.
+// Savings Circles keeper: draws payout orders, settles due rounds and posts reminders.
 //
 //   node scripts/keeper.js [--dry-run] [--ping]
 //
@@ -7,7 +7,7 @@
 //   --ping     also post a status check-in to Telegram (to verify the setup)
 //
 // Environment:
-//   KEEPER_PRIVATE_KEY   wallet that pays gas for settleRound (required unless --dry-run)
+//   KEEPER_PRIVATE_KEY   wallet that pays gas for drawOrder and settleRound (required unless --dry-run)
 //   RPC_URL              default: ETN testnet public RPC
 //   CONTRACT             default: SavingsCircles address from deployments.json (etnTestnet)
 //   APP_URL              default: https://etn-savings-circles.netlify.app
@@ -49,7 +49,7 @@ async function main() {
     appUrl: process.env.APP_URL || "https://etn-savings-circles.netlify.app",
   });
 
-  console.log(`Contract ${address} · active circles scanned: ${result.scanned} · settled: ${result.settled.length} · reminders: ${result.reminders.length}`);
+  console.log(`Contract ${address} · active circles scanned: ${result.scanned} · drawn: ${result.drawn.length} · settled: ${result.settled.length} · reminders: ${result.reminders.length}`);
   for (const m of result.messages) console.log(`  ${m}`);
 
   const { TELEGRAM_BOT_TOKEN: token, TELEGRAM_CHAT_ID: chat } = process.env;

@@ -1,6 +1,7 @@
 const { expect } = require("chai");
 const { ethers } = require("hardhat");
-const { time } = require("@nomicfoundation/hardhat-network-helpers");
+const { time, mine } = require("@nomicfoundation/hardhat-network-helpers");
+const { draw } = require("./helpers");
 const { runKeeper, reminderLead } = require("../scripts/keeper-lib");
 
 const C = ethers.parseEther("1");
@@ -15,6 +16,7 @@ describe("Keeper", function () {
     await sc.connect(a).join(0, "Amina", { value: C });
     await sc.connect(b).join(0, "Kofi", { value: C });
     await sc.connect(c).join(0, "", { value: C });
+    await draw(sc, 0);
     return { sc: sc.connect(keeper), keeper, a, b, c };
   }
   const nowOf = async () => (await ethers.provider.getBlock("latest")).timestamp;
@@ -32,9 +34,11 @@ describe("Keeper", function () {
     for (const m of [a, b, c]) await sc.connect(m).contribute(0, { value: C });
     const r = await runKeeper({ contract: sc, appUrl: "https://app.example" });
     expect(r.settled).to.have.length(1);
-    expect(r.messages[0]).to.match(/round 1 settled: 3 ETN sent to Amina\. https:\/\/app\.example\/#\/circle\/0/);
+    const first = (await sc.getMemberDetails(0)).addrs[0];
+    const name = { [a.address]: "Amina", [b.address]: "Kofi", [c.address]: "0x90F7…b906" }[first];
+    expect(r.messages[0]).to.include(`round 1 settled: 3 ETN sent to ${name}. https://app.example/#/circle/0`);
     expect((await sc.getCircle(0)).round).to.equal(1);
-    expect(await sc.withdrawable(a.address)).to.equal(C * 3n);
+    expect(await sc.withdrawable(first)).to.equal(C * 3n);
   });
 
   it("settles after the deadline, reporting who was covered by their deposit", async function () {
@@ -57,7 +61,8 @@ describe("Keeper", function () {
     // just inside the reminder window -> one reminder
     let r = await runKeeper({ contract: sc, now: deadline - lead + 60, interval: 900 });
     expect(r.reminders).to.have.length(1);
-    expect(r.messages[0]).to.match(/closes in 24 hours\. 1\/3 paid\. Still to pay 1 ETN: Kofi, 0x90F7…b906/);
+    expect(r.messages[0]).to.match(/closes in 24 hours\. 1\/3 paid\. Still to pay 1 ETN: /);
+    expect(r.messages[0]).to.include("Kofi").and.to.include("0x90F7…b906").and.not.to.include("Amina");
     // a later run (outside this interval window) stays quiet
     r = await runKeeper({ contract: sc, now: deadline - lead + 1200, interval: 900 });
     expect(r.reminders).to.have.length(0);
@@ -71,6 +76,26 @@ describe("Keeper", function () {
     expect((await sc.getCircle(0)).round).to.equal(0);
   });
 
+  it("draws the payout order of closed circles once the committed block exists", async function () {
+    const { sc, a, b } = await setup();
+    await sc.connect(a).createCircle("Pair", [a.address, b.address], C, DAY);
+    await sc.connect(a).join(1, "Amina", { value: C });
+    await sc.connect(b).join(1, "Kofi", { value: C });
+
+    let r = await runKeeper({ contract: sc, now: await nowOf() });
+    expect(r.drawn).to.have.length(0); // too early
+
+    await mine(6);
+    r = await runKeeper({ contract: sc, dryRun: true, now: await nowOf() });
+    expect(r.drawn[0].dryRun).to.equal(true);
+    expect((await sc.getCircle(1)).status).to.equal(4);
+
+    r = await runKeeper({ contract: sc, now: await nowOf() });
+    expect(r.drawn.map((d) => d.id)).to.deep.equal([1]);
+    expect((await sc.getCircle(1)).status).to.equal(1);
+    expect(r.messages[0]).to.match(/^🎲 "Pair" is full and the payout order has been drawn\. First pot goes to (Amina|Kofi)\./);
+  });
+
   it("announces completion and dissolution", async function () {
     const { sc, a, b, c } = await setup();
     for (let i = 0; i < 3; i++) {
@@ -82,6 +107,7 @@ describe("Keeper", function () {
     await sc.connect(a).createCircle("Short", [a.address, c.address], C, DAY);
     await sc.connect(a).join(1, "", { value: C });
     await sc.connect(c).join(1, "", { value: C });
+    await draw(sc, 1);
     await sc.connect(a).contribute(1, { value: C });
     await time.increase(DAY);
     await runKeeper({ contract: sc });
