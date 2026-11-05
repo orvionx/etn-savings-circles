@@ -146,8 +146,22 @@ async function main() {
     await act(p, '.action-card [data-act="join"]', `${nick} joins`);
   }
   await goCircle(a, 0);
-  check((await text(a, ".pill")).includes("Active"), "circle Active once all 3 seats are filled");
-  check(/Amina.*Kofi.*Njeri/.test(await text(a, ".members")), "payout order = join order (Amina, Kofi, Njeri)");
+  check((await text(a, ".pill")).includes("Drawing"), "circle closes for the draw once all 3 seats are filled");
+  check(/doesn't exist yet/.test(await text(a, ".action-card")), "explains the draw block isn't mined yet");
+  check(!(await a.$('.action-card [data-act="draw"]')), "no draw button before the committed block");
+  await provider.send("hardhat_mine", ["0x6"]);
+  const outsiderDraw = await openAs(all[5]);
+  await outsiderDraw.click("#connect");
+  await outsiderDraw.waitForFunction(() => document.querySelector("#connect").textContent.includes("…"));
+  await goCircle(outsiderDraw, 0);
+  await act(outsiderDraw, '.action-card [data-act="draw"]', "a non-member runs the draw");
+  await outsiderDraw.close();
+  await goCircle(a, 0);
+  check((await text(a, ".pill")).includes("Active"), "circle Active after the draw");
+  const order = (await sc.getCircle(0)).members;
+  const nameOfAddr = Object.fromEntries(accounts.map((x, i) => [x.toLowerCase(), ["Amina", "Kofi", "Njeri"][i]]));
+  const orderNames = order.map((x) => nameOfAddr[x.toLowerCase()]);
+  check(new RegExp(orderNames.join(".*"), "s").test(await text(a, ".members")), `app shows the drawn order (${orderNames.join(", ")})`);
   check(!!(await a.$(".ring-wrap svg .ring-node.current")), "ring highlights the current recipient");
 
   for (let r = 0; r < 3; r++) {
@@ -162,7 +176,8 @@ async function main() {
   await a.waitForFunction(() => document.querySelector("#activity .timeline"), { timeout: 15000 });
   if (await a.$("#more-activity")) await a.click("#more-activity");
   const activity = await text(a, "#activity");
-  check(/Amina joined/.test(activity) && /Round 3: 4\.5 ETN sent to Njeri/.test(activity), "activity timeline shows joins and payouts");
+  check(/Amina joined/.test(activity) && new RegExp(`Round 3: 4\\.5 ETN sent to ${orderNames[2]}`).test(activity), "activity timeline shows joins and payouts");
+  check(/Payout order drawn at random/.test(activity), "activity timeline shows the draw");
   await a.screenshot({ path: path.join(OUT, "3b-circle-completed.png"), fullPage: true });
 
   console.log("Reputation + badges");

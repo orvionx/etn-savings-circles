@@ -5,6 +5,8 @@ import { getConfig } from "./config.js";
 const CFG = getConfig();
 const ABI = [
   "function circleCount() view returns (uint256)",
+  "function drawOrder(uint256 id)",
+  "function drawBlockOf(uint256 id) view returns (uint64)",
   "function totalPaidOut() view returns (uint256)",
   "function roundsSettled() view returns (uint256)",
   "function circlesCompleted() view returns (uint256)",
@@ -30,6 +32,8 @@ const ABI = [
   "event MemberJoined(uint256 indexed id, address indexed member, string nickname)",
   "event MemberLeft(uint256 indexed id, address indexed member)",
   "event NicknameSet(uint256 indexed id, address indexed member, string nickname)",
+  "event CircleClosed(uint256 indexed id, uint64 drawBlock)",
+  "event PayoutOrderDrawn(uint256 indexed id, bytes32 seed)",
   "event CircleStarted(uint256 indexed id, uint64 firstDeadline)",
   "event Contributed(uint256 indexed id, uint32 indexed round, address indexed member)",
   "event DepositUsed(uint256 indexed id, uint32 indexed round, address indexed member)",
@@ -39,7 +43,7 @@ const ABI = [
   "event Withdrawn(address indexed account, uint256 amount)",
   "error InvalidMemberCount()", "error InvalidContribution()", "error InvalidDuration()", "error InvalidName()",
   "error NicknameTooLong()", "error DuplicateMember(address member)", "error ZeroAddressMember()", "error UnknownCircle()",
-  "error WrongStatus()", "error NotInvited()", "error NotMember()", "error AlreadyJoined()", "error WrongAmount()",
+  "error WrongStatus()", "error DrawNotReady()", "error NotInvited()", "error NotMember()", "error AlreadyJoined()", "error WrongAmount()",
   "error NotCreator()", "error AlreadyPaid()", "error RoundClosed()", "error RoundStillOpen()",
   "error NothingToWithdraw()", "error TransferFailed()", "error Reentrancy()", "error NotEligible()", "error InvalidRequirement()",
 ];
@@ -53,6 +57,7 @@ const ERROR_TEXT = {
   ZeroAddressMember: "One of the addresses is the zero address.",
   UnknownCircle: "That circle doesn't exist.",
   WrongStatus: "The circle has moved on. Refresh and try again.",
+  DrawNotReady: "The draw block hasn't been reached yet. Try again in a few seconds.",
   NotInvited: "Your wallet isn't on this circle's member list.",
   NotMember: "Your wallet isn't a member of this circle.",
   AlreadyJoined: "You've already joined this circle.",
@@ -66,7 +71,7 @@ const ERROR_TEXT = {
   NotEligible: "This circle requires a savings track record you don't have yet.",
   InvalidRequirement: "That track-record requirement isn't allowed.",
 };
-const STATUS = ["Forming", "Active", "Completed", "Cancelled"];
+const STATUS = ["Forming", "Active", "Completed", "Cancelled", "Drawing"];
 const BADGE_ABI = [
   "function totalSupply() view returns (uint256)",
   "function tokensOf(address owner) view returns (uint256[])",
@@ -324,11 +329,11 @@ if (window.ethereum?.on) {
 // ===================================================================== data
 async function loadCircle(id) {
   id = Number(id);
-  const [c, d, req] = await Promise.all([reader.getCircle(id), reader.getMemberDetails(id), reader.requirementOf(id)]);
+  const [c, d, req, drawBlock] = await Promise.all([reader.getCircle(id), reader.getMemberDetails(id), reader.requirementOf(id), reader.drawBlockOf(id).catch(() => 0n)]);
   return {
     id, creator: c.creator, name: c.name, contribution: c.contribution, roundDuration: Number(c.roundDuration),
     deadline: Number(c.roundDeadline), round: Number(c.round), size: Number(c.size), joined: Number(c.joinedCount),
-    paid: Number(c.paidCount), status: STATUS[Number(c.status)], open: c.open, minCompleted: Number(req),
+    paid: Number(c.paidCount), status: STATUS[Number(c.status)], open: c.open, minCompleted: Number(req), drawBlock: Number(drawBlock),
     members: [...d.addrs].map((a, i) => ({
       address: a, nickname: d.nicknames[i], joined: d.joined[i], paid: d.paidThisRound[i],
       depositUsed: d.depositUsed[i], defaults: Number(d.defaults[i]),
@@ -362,6 +367,7 @@ function ringSVG(c, { mini = false, preview = false } = {}) {
   const track = mini ? 34 : 12;
   let frac = 0;
   if (c.status === "Forming") frac = c.joined / n;
+  else if (c.status === "Drawing") frac = 1;
   else if (c.status === "Active") frac = c.round / n;
   else if (c.status === "Completed") frac = 1;
   else frac = c.round / n;
@@ -373,7 +379,7 @@ function ringSVG(c, { mini = false, preview = false } = {}) {
     <circle cx="${cx}" cy="${cy}" r="${R}" fill="none" stroke="url(#${gid})" stroke-width="${track}" stroke-linecap="round"
       stroke-dasharray="${circ}" stroke-dashoffset="${circ * (1 - frac)}" transform="rotate(-90 ${cx} ${cy})" style="transition:stroke-dashoffset .6s ease"/>`;
   if (mini) {
-    const label = c.status === "Forming" ? `${c.joined}/${n}` : c.status === "Active" ? `${c.round + 1}/${n}` : c.status === "Completed" ? "✓" : "×";
+    const label = c.status === "Forming" ? `${c.joined}/${n}` : c.status === "Drawing" ? "🎲" : c.status === "Active" ? `${c.round + 1}/${n}` : c.status === "Completed" ? "✓" : "×";
     out += `<text x="${cx}" y="${cy}" text-anchor="middle" dominant-baseline="central" style="font:800 ${label.length > 4 ? 84 : 100}px var(--font-display);fill:var(--text)">${label}</text></svg>`;
     return out;
   }
@@ -412,13 +418,14 @@ function ringSVG(c, { mini = false, preview = false } = {}) {
       ${nodeR >= 13 ? `<text x="${x}" y="${y}" text-anchor="middle" dominant-baseline="central" style="font:800 ${nodeR * .78}px var(--font-display);fill:#fff;text-transform:uppercase">${esc(initial(m)).toUpperCase()}</text>` : ""}
       ${done ? `<circle cx="${x + nodeR * .75}" cy="${y - nodeR * .75}" r="${Math.max(6, nodeR * .42)}" fill="#00c08b" stroke="var(--surface)" stroke-width="2.5"/>
         <path d="M${x + nodeR * .75 - nodeR * .2} ${y - nodeR * .75} l${nodeR * .14} ${nodeR * .15} l${nodeR * .26} -${nodeR * .3}" fill="none" stroke="#fff" stroke-width="${Math.max(1.6, nodeR * .1)}" stroke-linecap="round" stroke-linejoin="round"/>` : ""}
-      <title>${i + 1}. ${esc(nameOf(m))}${current ? " — receives this round" : done ? " — received pot" : ""}</title></g>`;
+      <title>${c.status === "Forming" || c.status === "Drawing" ? "" : `${i + 1}. `}${esc(nameOf(m))}${current ? " — receives this round" : done ? " — received pot" : ""}</title></g>`;
   }
 
   // center
   const pot = c.contribution * BigInt(n);
   let lbl, big, sub;
   if (c.status === "Forming") { lbl = preview ? "Each round's pot" : "Seats filled"; big = preview ? fmtNum(etn(pot)) : `${c.joined}/${n}`; sub = preview ? "ETN" : `Pot ${fmt(pot)}`; }
+  else if (c.status === "Drawing") { lbl = "All seats filled"; big = "🎲"; sub = "Drawing payout order"; }
   else if (c.status === "Active") { const r = c.members[c.round]; lbl = `Round ${c.round + 1} of ${n}`; big = fmtNum(etn(pot)); sub = `ETN to ${nameOf(r)}`; }
   else if (c.status === "Completed") { lbl = "Completed"; big = "✓"; sub = `${fmt(pot * BigInt(n))} paid out`; }
   else { lbl = "Dissolved"; big = "×"; sub = "Funds refunded"; }
@@ -484,6 +491,7 @@ function circleCard(c) {
   const n = c.size;
   let line;
   if (c.status === "Forming") line = `${n - c.joined} seat${n - c.joined === 1 ? "" : "s"} left`;
+  else if (c.status === "Drawing") line = "Drawing payout order";
   else if (c.status === "Active") line = `<span data-deadline="${c.deadline}">${countdown(c.deadline)}</span>`;
   else if (c.status === "Completed") line = "All rounds paid out";
   else line = "Dissolved · refunded";
@@ -528,7 +536,7 @@ async function viewHome() {
       <div>
         <span class="eyebrow"><b>New</b> Open circles — share a link, anyone can join</span>
         <h1>Save together.<br><span class="grad-text">Get paid out in turn.</span></h1>
-        <p class="lead">The chama, susu and tontine, rebuilt on Electroneum Smart Chain. Everyone pays the same amount each round and one member takes the whole pot. The smart contract holds the money, so nobody has to.</p>
+        <p class="lead">The chama, susu and tontine, rebuilt on Electroneum Smart Chain. Everyone pays the same amount each round and members take turns collecting the whole pot, in an order drawn at random. The smart contract holds the money, so nobody has to.</p>
         <div class="cta"><a class="btn primary large" href="#/new">Start a circle</a><a class="btn secondary large" href="#circles" data-tab-jump="open">Join an open circle</a></div>
         <div class="trust"><span>No middleman</span><span>No fees</span><span>Deposits cover a missed payment</span><span>Earn an on-chain savings reputation</span></div>
       </div>
@@ -546,8 +554,8 @@ async function viewHome() {
     <div class="section-head"><div><h2>How it works</h2><p>Four steps, enforced by a smart contract.</p></div></div>
     <div class="how">
       <div class="card"><div class="n">1</div><b>Create</b><p>Pick an amount, how often you pay, and either open seats or a member list.</p></div>
-      <div class="card"><div class="n">2</div><b>Join</b><p>Each member locks a one-round deposit. It covers one missed payment and comes back at the end.</p></div>
-      <div class="card"><div class="n">3</div><b>Pay each round</b><p>Everyone pays in. Once all have paid, the whole pot goes to that round's member.</p></div>
+      <div class="card"><div class="n">2</div><b>Join</b><p>Each member locks a one-round deposit. It covers one missed payment and comes back at the end. When the last seat fills, the payout order is drawn on-chain, so nobody can pick their slot.</p></div>
+      <div class="card"><div class="n">3</div><b>Pay each round</b><p>Everyone pays in, and the pot goes to the next member in the drawn order. Everyone gets the pot once, so nobody wins or loses money.</p></div>
       <div class="card"><div class="n">4</div><b>Collect & level up</b><p>Everyone gets the pot once. Finishing earns a badge NFT and raises your savings score.</p></div>
     </div>`;
   $$("[data-tab]", view).forEach((b) => b.onclick = () => { state.tab = b.dataset.tab; $$("[data-tab]").forEach((x) => x.setAttribute("aria-selected", x === b)); renderList(); });
@@ -579,6 +587,8 @@ async function renderDashboard() {
     if (c.status === "Forming") {
       if (me && !me.joined) todos.push(`<li><span class="ico pay">✉️</span><div class="grow"><b>You're invited to ${esc(c.name)}</b><span class="small muted">Lock a ${fmt(c.contribution)} deposit to join</span></div><a class="btn small primary" href="#/circle/${c.id}">Review</a></li>`);
       else if (me?.joined) todos.push(`<li><span class="ico">⏳</span><div class="grow"><b>${esc(c.name)}</b><span class="small muted">Waiting for ${c.size - c.joined} more member${c.size - c.joined === 1 ? "" : "s"}</span></div><button class="btn small secondary" data-act="share" data-id="${c.id}">Invite</button></li>`);
+    } else if (c.status === "Drawing" && me) {
+      todos.push(`<li><span class="ico">🎲</span><div class="grow"><b>${esc(c.name)} is full</b><span class="small muted">The payout order is being drawn</span></div><a class="btn small secondary" href="#/circle/${c.id}">View</a></li>`);
     } else if (c.status === "Active" && me) {
       if (isDue(c)) todos.push(`<li><span class="ico settle">⚖️</span><div class="grow"><b>${esc(c.name)}: round ${c.round + 1} is ready</b><span class="small muted">Settle it to release the pot</span></div><button class="btn small primary" data-act="settle" data-id="${c.id}">Settle</button></li>`);
       else if (!me.paid) todos.push(`<li><span class="ico pay">💸</span><div class="grow"><b>Pay ${fmt(c.contribution)} · ${esc(c.name)}</b><span class="small muted">Round ${c.round + 1} · <span data-deadline="${c.deadline}">${countdown(c.deadline)}</span></span></div><button class="btn small primary" data-act="pay" data-id="${c.id}" data-amt="${c.contribution}">Pay</button></li>`);
@@ -586,7 +596,7 @@ async function renderDashboard() {
       else if (idx > c.round) todos.push(`<li><span class="ico turn">📅</span><div class="grow"><b>Your payout: round ${idx + 1} of ${c.size}</b><span class="small muted">${esc(c.name)} · around ${dateIn(c.deadline + (idx - c.round - 1) * c.roundDuration)}</span></div></li>`);
     }
   }
-  const active = state.mine.filter((c) => c.status === "Active" || c.status === "Forming").length;
+  const active = state.mine.filter((c) => ["Active", "Forming", "Drawing"].includes(c.status)).length;
   let myRep = null;
   try { myRep = await loadReputation(state.account); } catch {}
   if (!$("#dash")) return;
@@ -638,7 +648,7 @@ function viewCreate() {
       <form class="card pad-lg stack" id="create-form" novalidate>
         <div><span class="label">Who can join?</span>
           <div class="seg"><button type="button" data-type="open" aria-pressed="true"><b>🔗 Open circle</b><span>Share a link. First come, first served.</span></button>
-          <button type="button" data-type="invite" aria-pressed="false"><b>🔒 Invite-only</b><span>List exact wallets and payout order.</span></button></div></div>
+          <button type="button" data-type="invite" aria-pressed="false"><b>🔒 Invite-only</b><span>List the exact wallets who can join.</span></button></div></div>
         <div><label for="f-name">Circle name</label><input id="f-name" maxlength="64" placeholder="e.g. Kibera Market Chama" autocomplete="off"></div>
         <div><label for="f-amount">Each member pays per round</label>
           <div class="input-affix"><input id="f-amount" inputmode="decimal" value="1" autocomplete="off"><span>ETN</span></div>
@@ -651,7 +661,7 @@ function viewCreate() {
           <div class="chips" id="req-chips" style="margin-top:0">${REQUIREMENTS.map(([v, l]) => `<button type="button" data-req="${v}" aria-pressed="${v === 0}">${v ? "🛡 " : ""}${l}</button>`).join("")}</div>
           <div class="hint" id="req-hint" style="margin-top:6px"></div></div>
         <div id="members-box" hidden>
-          <label for="f-members">Members in payout order <span class="hint">· one wallet address per line. The first is paid in round 1.</span></label>
+          <label for="f-members">Members <span class="hint">· one wallet address per line. The payout order is drawn when everyone has joined.</span></label>
           <textarea id="f-members" class="mono" placeholder="0x…&#10;0x…&#10;0x…" spellcheck="false"></textarea>
           <div class="row" style="margin-top:8px"><button type="button" class="btn small secondary" id="add-me">+ Add my address</button></div>
         </div>
@@ -786,10 +796,11 @@ async function viewCircle(id) {
   const recipient = c.status === "Active" ? c.members[c.round] : null;
   const pot = c.contribution * BigInt(n);
   const canJoin = c.status === "Forming" && (!me || !me.joined) && (c.open || me);
-  const [reps, eligible, myRep] = await Promise.all([
+  const [reps, eligible, myRep, block] = await Promise.all([
     Promise.all(c.members.map((m) => loadReputation(m.address).catch(() => null))),
     state.account && c.minCompleted ? reader.isEligible(id, state.account).catch(() => true) : true,
     state.account && c.minCompleted ? loadReputation(state.account).catch(() => null) : null,
+    c.status === "Drawing" ? readProvider.getBlockNumber().catch(() => 0) : 0,
   ]);
   if (location.hash !== `#/circle/${id}`) return;
   const reqText = c.minCompleted ? `${c.minCompleted}+ completed circle${c.minCompleted > 1 ? "s" : ""} and no defaults` : "";
@@ -803,21 +814,30 @@ async function viewCircle(id) {
       acts.push(`<a class="btn secondary" href="#/" data-goto-open>Find a circle to start with</a>`);
     } else if (canJoin) {
       head = c.open ? "🪑 A seat is waiting for you" : "✉️ You're invited";
-      body = `Join by locking a <b>${fmt(c.contribution)}</b> deposit. It covers one missed payment and comes back when the circle ends. ${c.open ? `You'll be member <b>#${c.members.length + 1}</b> in the payout order.` : ""}
+      body = `Join by locking a <b>${fmt(c.contribution)}</b> deposit. It covers one missed payment and comes back when the circle ends. Payout slots are drawn at random once all seats are filled.
         <div style="margin-top:12px"><label for="j-nick">Nickname <span class="hint">(optional)</span></label><input id="j-nick" maxlength="32" placeholder="How members will see you"></div>`;
       acts.push(`<button class="btn primary large" data-act="join" data-id="${id}" data-amt="${c.contribution}">Join · lock ${fmt(c.contribution)}</button>`);
     } else if (me?.joined) {
       head = "⏳ Waiting for members";
-      body = `You're in. The circle starts when all ${n} seats are filled — ${n - c.joined} to go. Share the link to fill it faster.`;
+      body = `You're in. When all ${n} seats are filled, the payout order is drawn at random and round 1 begins. ${n - c.joined} to go. Share the link to fill it faster.`;
       acts.push(`<button class="btn primary" data-act="share" data-id="${id}">Invite members</button>`);
       acts.push(`<button class="btn danger" data-act="leave" data-id="${id}">Leave & get deposit back</button>`);
     } else {
       head = "Members only"; body = "This circle is invite-only, and your wallet isn't on the list.";
     }
     if (isCreator) acts.push(`<button class="btn ghost" data-act="cancel" data-id="${id}">Cancel circle</button>`);
+  } else if (c.status === "Drawing") {
+    head = "🎲 Drawing the payout order";
+    if (block > c.drawBlock) {
+      body = "All seats are filled, and the block that decides the order now exists. Anyone can run the draw, and the result is the same whoever does it.";
+      acts.push(`<button class="btn primary large" data-act="draw" data-id="${id}">Draw payout order</button>`);
+    } else {
+      body = `All seats are filled. The order comes from the hash of block <b>${c.drawBlock}</b>, which doesn't exist yet, so nobody can know or choose the result. About ${Math.max(1, c.drawBlock + 1 - block) * 5} seconds to go.`;
+      setTimeout(() => { if (location.hash === `#/circle/${id}`) route({ keepScroll: true }); }, 6000);
+    }
   } else if (c.status === "Active") {
     if (due && c.paid === c.members.length) { head = "✅ Everyone has paid"; body = `Settle the round to send <b>${fmt(pot)}</b> to <b>${esc(nameOf(recipient))}</b>. Anyone can do it.`; acts.push(`<button class="btn primary large" data-act="settle" data-id="${id}">Settle round ${c.round + 1}</button>`); }
-    else if (due) { head = "⌛ Deadline passed"; body = "Anyone can settle the round now. Missed payments are covered from deposits; a repeat miss dissolves the circle with refunds for everyone."; acts.push(`<button class="btn primary large" data-act="settle" data-id="${id}">Settle round ${c.round + 1}</button>`); }
+    else if (due) { head = "⌛ Deadline passed"; body = "Anyone can settle the round now. Missed payments are covered from deposits. A repeat miss dissolves the circle, refunding this round's payments and unused deposits."; acts.push(`<button class="btn primary large" data-act="settle" data-id="${id}">Settle round ${c.round + 1}</button>`); }
     else if (me && !me.paid) { head = same(recipient.address, state.account) ? "🎉 It's your turn!" : "💸 Your payment is due"; body = `Pay <b>${fmt(c.contribution)}</b> for round ${c.round + 1} before the deadline (<span data-deadline="${c.deadline}">${countdown(c.deadline)}</span>).${same(recipient.address, state.account) ? ` You receive the <b>${fmt(pot)}</b> pot when this round settles.` : ""}`; acts.push(`<button class="btn primary large" data-act="pay" data-id="${id}" data-amt="${c.contribution}">Pay ${fmt(c.contribution)}</button>`); }
     else if (me) { head = "👍 You've paid this round"; body = `${c.paid} of ${c.members.length} members have paid. The round can be settled once everyone pays or the deadline passes.`; }
     else { head = `Round ${c.round + 1} in progress`; body = `${c.paid} of ${c.members.length} members have paid. <b>${esc(nameOf(recipient))}</b> receives this round's pot.`; }
@@ -825,22 +845,25 @@ async function viewCircle(id) {
   } else if (c.status === "Completed") { head = "🏁 Circle completed"; body = `Every member received the <b>${fmt(pot)}</b> pot once, unused deposits were returned, and every member earned a 🏅 badge NFT.`; if (me) acts.push(`<a class="btn secondary" href="#/u/${state.account}">See my badge</a>`); }
   else { head = "Circle dissolved"; body = "This circle was cancelled or dissolved, and refunds were credited to members."; }
   if (me && state.withdrawable > 0n) acts.push(`<button class="btn secondary" data-act="withdraw">Collect ${fmt(state.withdrawable)}</button>`);
-  if (!state.account && (c.status === "Forming" || c.status === "Active")) acts = [`<button class="btn primary large" data-act="connect">Connect wallet to take part</button>`];
+  if (!state.account && (c.status === "Forming" || c.status === "Active" || (c.status === "Drawing" && acts.length))) acts = [`<button class="btn primary large" data-act="connect">Connect wallet to take part</button>`];
 
   // ---- members
   const rows = [];
+  const unordered = c.status === "Forming" || c.status === "Drawing"; // slots don't exist until the draw
+  const pos = (i) => `<span class="pos">${unordered ? "·" : i + 1}</span>`;
   for (let i = 0; i < Math.max(n, c.members.length); i++) {
     const m = c.members[i];
-    if (!m) { rows.push(`<li><span class="pos">${i + 1}</span><span class="av" style="background:var(--surface-3);color:var(--faint)">+</span><div class="who"><b class="faint">Open seat</b></div><span class="state seat">Available</span></li>`); continue; }
+    if (!m) { rows.push(`<li>${pos(i)}<span class="av" style="background:var(--surface-3);color:var(--faint)">+</span><div class="who"><b class="faint">Open seat</b></div><span class="state seat">Available</span></li>`); continue; }
     let st;
     if (c.status === "Forming") st = m.joined ? '<span class="state ok">Joined</span>' : '<span class="state no">Invited</span>';
+    else if (c.status === "Drawing") st = '<span class="state ok">Joined</span>';
     else if (c.status === "Active") st = i < c.round ? '<span class="state ok">Got pot ✓</span>' : i === c.round ? `<span class="state turn">${m.paid ? "Paid · " : ""}This round</span>` : m.paid ? '<span class="state ok">Paid ✓</span>' : '<span class="state no">Not paid</span>';
     else st = c.status === "Completed" || i < c.round ? '<span class="state ok">Got pot ✓</span>' : '<span class="state no">—</span>';
     const tags = [];
     if (same(m.address, state.account)) tags.push("you");
     if (same(m.address, c.creator)) tags.push("creator");
     if (m.depositUsed) tags.push(`<span style="color:var(--danger)">missed ${m.defaults}× · deposit used</span>`);
-    rows.push(`<li><span class="pos">${i + 1}</span>${avatar(m)}<div class="who"><b><a class="plain-link" href="#/u/${m.address}">${esc(nameOf(m))}</a> ${reps[i] ? scoreChip(reps[i]) : ""}</b>
+    rows.push(`<li>${pos(i)}${avatar(m)}<div class="who"><b><a class="plain-link" href="#/u/${m.address}">${esc(nameOf(m))}</a> ${reps[i] ? scoreChip(reps[i]) : ""}</b>
       <span class="tiny muted"><a class="mono" href="${addrUrl(m.address)}" target="_blank" rel="noopener">${short(m.address)}</a>${tags.length ? " · " + tags.join(" · ") : ""}</span></div>${st}</li>`);
   }
 
@@ -855,7 +878,7 @@ async function viewCircle(id) {
         ${c.status === "Active" ? `<div style="margin-top:14px"><div class="row between small"><span class="muted">Paid this round</span><b class="num">${c.paid} / ${c.members.length}</b></div><div class="progress" style="margin-top:6px"><i style="width:${(c.paid / c.members.length) * 100}%"></i></div></div>` : ""}
       </div>
       <div class="stack area-rest">
-        <div class="card"><div class="row between" style="margin-bottom:6px"><b>Members & payout order</b>${me?.joined ? `<button class="btn small ghost" data-act="nick" data-id="${id}">✏️ My nickname</button>` : ""}</div><ul class="members">${rows.join("")}</ul></div>
+        <div class="card"><div class="row between" style="margin-bottom:6px"><b>${unordered ? "Members" : "Members & payout order"}</b>${me?.joined ? `<button class="btn small ghost" data-act="nick" data-id="${id}">✏️ My nickname</button>` : ""}</div><ul class="members">${rows.join("")}</ul></div>
         <div class="card"><b>Activity</b><div id="activity" style="margin-top:12px"><span class="small muted">Loading on-chain activity…</span></div></div>
       </div>
       <div class="side stack">
@@ -925,6 +948,8 @@ async function loadActivity(c) {
         case "MemberJoined": dot = "g"; icon = "+"; text = `<b>${a.nickname ? esc(a.nickname) : who(a.member)}</b> joined and locked a deposit`; break;
         case "MemberLeft": dot = "y"; icon = "−"; text = `<b>${who(a.member)}</b> left — deposit refunded`; break;
         case "NicknameSet": icon = "✎"; text = `${short(a.member)} is now <b>${esc(a.nickname)}</b>`; break;
+        case "CircleClosed": icon = "🔒"; text = `All seats filled — payout order will come from block ${a.drawBlock}`; break;
+        case "PayoutOrderDrawn": dot = "g"; icon = "🎲"; text = `Payout order drawn at random`; break;
         case "CircleStarted": icon = "▶"; text = `Circle started — round 1 begins`; break;
         case "Contributed": dot = "g"; icon = "✓"; text = `<b>${who(a.member)}</b> paid round ${Number(a.round) + 1}`; break;
         case "DepositUsed": dot = "r"; icon = "!"; text = `<b>${who(a.member)}</b> missed round ${Number(a.round) + 1} — covered by deposit`; break;
@@ -1055,6 +1080,7 @@ document.addEventListener("click", async (ev) => {
       case "leave": if (confirm("Leave this circle? Your deposit will be ready to collect.")) await sendTx("Leave circle", (c) => c.leave(id)); break;
       case "pay": if (!haveFunds(amt, "This payment")) break; await sendTx("Pay contribution", (c) => c.contribute(id, { value: amt })); break;
       case "settle": await sendTx("Settle round", (c) => c.settleRound(id), { celebrate: true }); break;
+      case "draw": await sendTx("Draw payout order", (c) => c.drawOrder(id), { celebrate: true }); break;
       case "cancel": if (confirm("Cancel this circle? Everyone who joined gets their deposit back.")) await sendTx("Cancel circle", (c) => c.cancelForming(id)); break;
       case "nick": { const v = prompt("Your nickname in this circle (max 32 characters):", meIn(state.current)?.nickname || ""); if (v !== null) await sendTx("Update nickname", (c) => c.setNickname(id, v.trim().slice(0, 32))); break; }
       case "share": await share(Number(id)); break;

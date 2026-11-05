@@ -226,6 +226,7 @@ header.top {
 .pill { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; font-weight: 650; padding: 3px 9px; border-radius: 999px; white-space: nowrap; }
 .pill::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
 .pill.Forming { background: var(--info-soft); color: var(--info); }
+.pill.Drawing { background: var(--info-soft); color: var(--info); }
 .pill.Active { background: var(--brand-soft); color: var(--brand); }
 .pill.Completed { background: var(--surface-3); color: var(--muted); }
 .pill.Cancelled { background: var(--danger-soft); color: var(--danger); }
