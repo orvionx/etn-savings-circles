@@ -1,7 +1,7 @@
 const { expect } = require("chai");
 const { ethers } = require("hardhat");
 const { time, mine } = require("@nomicfoundation/hardhat-network-helpers");
-const { draw, inPayoutOrder, expectedOrder } = require("./helpers");
+const { draw, inPayoutOrder, expectedOrder, secretOf, commitOf } = require("./helpers");
 
 const C = ethers.parseEther("1");
 const DAY = 24 * 60 * 60;
@@ -20,7 +20,7 @@ describe("SavingsCircles", function () {
     const ctx = await setup(n);
     const { sc, members } = ctx;
     await sc.createCircle("Market Women Chama", members.map((m) => m.address), C, 7 * DAY);
-    for (const m of members) await sc.connect(m).join(0, "", { value: C });
+    for (const m of members) await sc.connect(m).join(0, "", commitOf(0, m), { value: C });
     await draw(sc, 0);
     ctx.members = await inPayoutOrder(sc, 0, members); // members[r] collects in round r
     return ctx;
@@ -56,32 +56,32 @@ describe("SavingsCircles", function () {
     it("closes only when every member has joined with the exact deposit", async function () {
       const { sc, members, outsider } = await setup();
       await expect(sc.createCircle("Chama", members.map((m) => m.address), C, DAY)).to.emit(sc, "CircleCreated");
-      await expect(sc.connect(outsider).join(0, "", { value: C })).to.be.revertedWithCustomError(sc, "NotInvited");
-      await expect(sc.connect(members[0]).join(0, "", { value: C - 1n })).to.be.revertedWithCustomError(sc, "WrongAmount");
-      await sc.connect(members[0]).join(0, "Amina", { value: C });
-      await expect(sc.connect(members[0]).join(0, "", { value: C })).to.be.revertedWithCustomError(sc, "AlreadyJoined");
-      await sc.connect(members[1]).join(0, "", { value: C });
+      await expect(sc.connect(outsider).join(0, "", commitOf(0, outsider), { value: C })).to.be.revertedWithCustomError(sc, "NotInvited");
+      await expect(sc.connect(members[0]).join(0, "", commitOf(0, members[0]), { value: C - 1n })).to.be.revertedWithCustomError(sc, "WrongAmount");
+      await sc.connect(members[0]).join(0, "Amina", commitOf(0, members[0]), { value: C });
+      await expect(sc.connect(members[0]).join(0, "", commitOf(0, members[0]), { value: C })).to.be.revertedWithCustomError(sc, "AlreadyJoined");
+      await sc.connect(members[1]).join(0, "", commitOf(0, members[1]), { value: C });
       expect((await sc.getCircle(0)).status).to.equal(Status.Forming);
-      await expect(sc.connect(members[2]).join(0, "", { value: C })).to.emit(sc, "CircleClosed");
+      await expect(sc.connect(members[2]).join(0, "", commitOf(0, members[2]), { value: C })).to.emit(sc, "CircleClosed");
       expect((await sc.getCircle(0)).status).to.equal(Status.Drawing);
     });
 
     it("lets the creator cancel a forming circle and refunds deposits", async function () {
       const { sc, members } = await setup();
       await sc.createCircle("Chama", members.map((m) => m.address), C, DAY);
-      await sc.connect(members[0]).join(0, "", { value: C });
+      await sc.connect(members[0]).join(0, "", commitOf(0, members[0]), { value: C });
       await expect(sc.connect(members[0]).cancelForming(0)).to.be.revertedWithCustomError(sc, "NotCreator");
       await sc.cancelForming(0);
       expect(await sc.withdrawable(members[0].address)).to.equal(C);
       expect(await sc.withdrawable(members[1].address)).to.equal(0n);
-      await expect(sc.connect(members[1]).join(0, "", { value: C })).to.be.revertedWithCustomError(sc, "WrongStatus");
+      await expect(sc.connect(members[1]).join(0, "", commitOf(0, members[1]), { value: C })).to.be.revertedWithCustomError(sc, "WrongStatus");
     });
 
     it("tracks circles per user", async function () {
       const { sc, creator, members, outsider } = await setup();
       await sc.createCircle("A", members.map((m) => m.address), C, DAY);
       await sc.connect(members[0]).createOpenCircle("B", 2, C, DAY, 0);
-      await sc.connect(outsider).join(1, "", { value: C });
+      await sc.connect(outsider).join(1, "", commitOf(1, outsider), { value: C });
       expect(await sc.getUserCircles(creator.address)).to.deep.equal([0n]);
       expect(await sc.getUserCircles(members[0].address)).to.deep.equal([0n, 1n]);
       expect(await sc.getUserCircles(members[1].address)).to.deep.equal([0n]);
@@ -95,11 +95,11 @@ describe("SavingsCircles", function () {
       const [, a, b, c, d] = signers;
       await expect(sc.connect(a).createOpenCircle("Open Susu", 3, C, DAY, 0))
         .to.emit(sc, "CircleCreated").withArgs(0, a.address, "Open Susu", true, 3, C, DAY, 0);
-      await sc.connect(c).join(0, "Chidi", { value: C });
-      await sc.connect(a).join(0, "Ama", { value: C });
+      await sc.connect(c).join(0, "Chidi", commitOf(0, c), { value: C });
+      await sc.connect(a).join(0, "Ama", commitOf(0, a), { value: C });
       expect((await sc.getCircle(0)).status).to.equal(Status.Forming);
-      await expect(sc.connect(b).join(0, "Bola", { value: C })).to.emit(sc, "CircleClosed");
-      await expect(sc.connect(d).join(0, "", { value: C })).to.be.revertedWithCustomError(sc, "WrongStatus");
+      await expect(sc.connect(b).join(0, "Bola", commitOf(0, b), { value: C })).to.emit(sc, "CircleClosed");
+      await expect(sc.connect(d).join(0, "", commitOf(0, d), { value: C })).to.be.revertedWithCustomError(sc, "WrongStatus");
 
       await draw(sc, 0);
       const details = await sc.getMemberDetails(0);
@@ -113,7 +113,7 @@ describe("SavingsCircles", function () {
       const { sc, signers } = await setup();
       const [, a, b, c, d] = signers;
       await sc.connect(a).createOpenCircle("Open", 4, C, DAY, 0);
-      for (const s of [a, b, c]) await sc.connect(s).join(0, "", { value: C });
+      for (const s of [a, b, c]) await sc.connect(s).join(0, "", commitOf(0, s), { value: C });
       await expect(sc.connect(d).leave(0)).to.be.revertedWithCustomError(sc, "NotMember");
       await expect(sc.connect(b).leave(0)).to.emit(sc, "MemberLeft").withArgs(0, b.address);
       expect(await sc.withdrawable(b.address)).to.equal(C);
@@ -121,8 +121,8 @@ describe("SavingsCircles", function () {
       expect(circle.members).to.deep.equal([a.address, c.address]);
       expect(circle.joinedCount).to.equal(2);
       // seat is free again; b can rejoin
-      await sc.connect(d).join(0, "", { value: C });
-      await sc.connect(b).join(0, "", { value: C });
+      await sc.connect(d).join(0, "", commitOf(0, d), { value: C });
+      await sc.connect(b).join(0, "", commitOf(0, b), { value: C });
       circle = await sc.getCircle(0);
       expect(circle.members).to.deep.equal([a.address, c.address, d.address, b.address]);
       expect(circle.status).to.equal(Status.Drawing);
@@ -132,11 +132,11 @@ describe("SavingsCircles", function () {
     it("lets an invited member leave and rejoin an invite-only circle", async function () {
       const { sc, members } = await setup();
       await sc.createCircle("Chama", members.map((m) => m.address), C, DAY);
-      await sc.connect(members[1]).join(0, "", { value: C });
+      await sc.connect(members[1]).join(0, "", commitOf(0, members[1]), { value: C });
       await sc.connect(members[1]).leave(0);
       expect((await sc.getCircle(0)).members.length).to.equal(3); // still on the list
       expect((await sc.getMember(0, members[1].address)).invited).to.equal(true);
-      await sc.connect(members[1]).join(0, "", { value: C });
+      await sc.connect(members[1]).join(0, "", commitOf(0, members[1]), { value: C });
       expect((await sc.getCircle(0)).joinedCount).to.equal(1);
     });
   });
@@ -146,25 +146,56 @@ describe("SavingsCircles", function () {
       const ctx = await setup(n);
       const { sc, members } = ctx;
       await sc.createCircle("Draw", members.map((m) => m.address), C, DAY);
-      for (const m of members) await sc.connect(m).join(0, "", { value: C });
+      for (const m of members) await sc.connect(m).join(0, "", commitOf(0, m), { value: C });
       return ctx;
     }
+    const revealAll = async (sc, ms) => { for (const m of ms) await sc.connect(m).reveal(0, secretOf(0, m)); };
 
-    it("commits to a future block when the last seat is filled", async function () {
+    it("requires a commit to join and sets a reveal deadline when the last seat fills", async function () {
       const { sc, members } = await setup(2);
       await sc.createCircle("Draw", members.map((m) => m.address), C, DAY);
-      expect(await sc.drawBlockOf(0)).to.equal(0);
-      await sc.connect(members[0]).join(0, "", { value: C });
-      const tx = await sc.connect(members[1]).join(0, "", { value: C });
-      const target = (await tx.wait()).blockNumber + 5;
-      await expect(tx).to.emit(sc, "CircleClosed").withArgs(0, target);
-      expect(await sc.drawBlockOf(0)).to.equal(target);
+      await expect(sc.connect(members[0]).join(0, "", ethers.ZeroHash, { value: C })).to.be.revertedWithCustomError(sc, "InvalidCommit");
+      await sc.connect(members[0]).join(0, "", commitOf(0, members[0]), { value: C });
+      expect((await sc.getDraw(0)).revealDeadline).to.equal(0);
+      const tx = await sc.connect(members[1]).join(0, "", commitOf(0, members[1]), { value: C });
+      await expect(tx).to.emit(sc, "CircleClosed").withArgs(0, (await time.latest()) + DAY);
     });
 
-    it("cannot be drawn until the committed block exists", async function () {
-      const { sc } = await closed();
+    it("only accepts each member's own secret, once", async function () {
+      const { sc, members, outsider } = await closed(3);
+      const [a, b] = members;
+      await expect(sc.connect(a).reveal(0, ethers.id("wrong"))).to.be.revertedWithCustomError(sc, "BadReveal");
+      await expect(sc.connect(a).reveal(0, secretOf(0, b))).to.be.revertedWithCustomError(sc, "BadReveal");
+      await expect(sc.connect(outsider).reveal(0, ethers.id("x"))).to.be.revertedWithCustomError(sc, "NotMember");
+      await expect(sc.connect(a).reveal(0, secretOf(0, a))).to.emit(sc, "SecretRevealed").withArgs(0, a.address);
+      await expect(sc.connect(a).reveal(0, secretOf(0, a))).to.be.revertedWithCustomError(sc, "AlreadyRevealed");
+      expect((await sc.getDraw(0)).revealedCount).to.equal(1);
+    });
+
+    it("binds a commit to its owner: copying someone's commit doesn't let you reuse their secret", async function () {
+      const { sc, members } = await setup(2);
+      const [a, b] = members;
+      await sc.createCircle("Draw", [a.address, b.address], C, DAY);
+      await sc.connect(a).join(0, "", commitOf(0, a), { value: C });
+      await sc.connect(b).join(0, "", commitOf(0, a), { value: C }); // copied
+      await sc.connect(a).reveal(0, secretOf(0, a));
+      await expect(sc.connect(b).reveal(0, secretOf(0, a))).to.be.revertedWithCustomError(sc, "BadReveal");
+    });
+
+    it("schedules the draw as soon as everyone has revealed", async function () {
+      const { sc, members } = await closed(3);
+      await revealAll(sc, members.slice(0, 2));
+      expect((await sc.getDraw(0)).drawBlock).to.equal(0);
+      const tx = await sc.connect(members[2]).reveal(0, secretOf(0, members[2]));
+      await expect(tx).to.emit(sc, "DrawScheduled").withArgs(0, (await tx.wait()).blockNumber + 5);
+    });
+
+    it("cannot be drawn before the reveal deadline or the committed block", async function () {
+      const { sc, members } = await closed(3);
       await expect(sc.drawOrder(0)).to.be.revertedWithCustomError(sc, "DrawNotReady");
-      const target = Number(await sc.drawBlockOf(0));
+      await revealAll(sc, members);
+      await expect(sc.drawOrder(0)).to.be.revertedWithCustomError(sc, "DrawNotReady");
+      const target = Number((await sc.getDraw(0)).drawBlock);
       await mine(target - (await ethers.provider.getBlockNumber()) - 1);
       // this transaction lands exactly on the committed block, whose hash doesn't exist yet
       await expect(sc.drawOrder(0)).to.be.revertedWithCustomError(sc, "DrawNotReady");
@@ -173,7 +204,7 @@ describe("SavingsCircles", function () {
 
     it("blocks joining, leaving, cancelling and paying while the draw is pending", async function () {
       const { sc, members, outsider } = await closed(3);
-      await expect(sc.connect(outsider).join(0, "", { value: C })).to.be.revertedWithCustomError(sc, "WrongStatus");
+      await expect(sc.connect(outsider).join(0, "", commitOf(0, outsider), { value: C })).to.be.revertedWithCustomError(sc, "WrongStatus");
       await expect(sc.connect(members[0]).leave(0)).to.be.revertedWithCustomError(sc, "WrongStatus");
       await expect(sc.cancelForming(0)).to.be.revertedWithCustomError(sc, "WrongStatus");
       await expect(sc.connect(members[0]).contribute(0, { value: C })).to.be.revertedWithCustomError(sc, "WrongStatus");
@@ -181,24 +212,51 @@ describe("SavingsCircles", function () {
       await expect(sc.currentRecipient(0)).to.be.revertedWithCustomError(sc, "WrongStatus");
     });
 
-    it("derives the order only from the committed block's hash, whoever calls it", async function () {
+    it("derives the order only from the secrets and the block hash, whoever calls it", async function () {
       const { sc, members, outsider } = await closed(7);
+      await revealAll(sc, [...members].reverse()); // reveal order doesn't matter
       const listed = members.map((m) => m.address);
-      const target = Number(await sc.drawBlockOf(0));
+      const target = Number((await sc.getDraw(0)).drawBlock);
       await mine(20);
       const hash = (await ethers.provider.getBlock(target)).hash;
       await expect(sc.connect(outsider).drawOrder(0)).to.emit(sc, "CircleStarted");
       const c = await sc.getCircle(0);
       expect(c.status).to.equal(Status.Active);
-      expect([...c.members]).to.deep.equal(expectedOrder(listed, hash, 0));
-      expect([...c.members].sort()).to.deep.equal([...listed].sort());
+      const secrets = members.map((m) => [m.address, secretOf(0, m)]);
+      expect([...c.members]).to.deep.equal(expectedOrder(listed, [], secrets, hash, 0));
       await expect(sc.drawOrder(0)).to.be.revertedWithCustomError(sc, "WrongStatus");
+    });
+
+    it("puts members who don't reveal after those who do", async function () {
+      for (let run = 0; run < 5; run++) {
+        const { sc, members } = await closed(5);
+        const revealers = members.slice(2);
+        await revealAll(sc, revealers);
+        await time.increase(DAY);
+        await expect(sc.connect(members[0]).reveal(0, secretOf(0, members[0]))).to.be.revertedWithCustomError(sc, "RevealClosed");
+        await expect(sc.drawOrder(0)).to.emit(sc, "DrawScheduled"); // anyone, after the deadline
+        await mine(6);
+        await sc.drawOrder(0);
+        const order = [...(await sc.getCircle(0)).members];
+        expect(order.slice(0, 3).sort()).to.deep.equal(revealers.map((m) => m.address).sort());
+        expect(order.slice(3).sort()).to.deep.equal(members.slice(0, 2).map((m) => m.address).sort());
+      }
+    });
+
+    it("still draws a full order if nobody reveals", async function () {
+      const { sc, members } = await closed(4);
+      await time.increase(DAY);
+      await sc.drawOrder(0);
+      await mine(6);
+      await sc.drawOrder(0);
+      const c = await sc.getCircle(0);
+      expect(c.status).to.equal(Status.Active);
+      expect([...c.members].sort()).to.deep.equal(members.map((m) => m.address).sort());
     });
 
     it("starts the first round's clock at the draw", async function () {
       const { sc } = await closed(3);
-      const c = await sc.getCircle(0);
-      expect(c.roundDeadline).to.equal(0);
+      expect((await sc.getCircle(0)).roundDeadline).to.equal(0);
       await draw(sc, 0);
       expect((await sc.getCircle(0)).roundDeadline).to.equal((await time.latest()) + DAY);
     });
@@ -209,7 +267,7 @@ describe("SavingsCircles", function () {
       const firsts = {};
       for (let id = 0; id < 40; id++) {
         await sc.createCircle("Draw", addrs, C, DAY);
-        for (const m of members) await sc.connect(m).join(id, "", { value: C });
+        for (const m of members) await sc.connect(m).join(id, "", commitOf(id, m), { value: C });
         const order = await draw(sc, id);
         firsts[order[0]] = (firsts[order[0]] || 0) + 1;
       }
@@ -219,14 +277,14 @@ describe("SavingsCircles", function () {
 
     it("recommits to a new block if nobody drew within 256 blocks", async function () {
       const { sc, members } = await closed(3);
+      await revealAll(sc, members);
       await mine(300);
       const tx = await sc.drawOrder(0);
-      const target = (await tx.wait()).blockNumber + 5;
-      await expect(tx).to.emit(sc, "CircleClosed").withArgs(0, target);
+      await expect(tx).to.emit(sc, "DrawScheduled").withArgs(0, (await tx.wait()).blockNumber + 5);
       expect((await sc.getCircle(0)).status).to.equal(Status.Drawing);
-      await draw(sc, 0);
+      await mine(6);
+      await sc.drawOrder(0);
       expect((await sc.getCircle(0)).status).to.equal(Status.Active);
-      expect((await sc.getCircle(0)).members).to.have.length(members.length);
     });
 
     it("rejects unknown and unclosed circles", async function () {
@@ -234,6 +292,18 @@ describe("SavingsCircles", function () {
       await expect(sc.drawOrder(0)).to.be.revertedWithCustomError(sc, "UnknownCircle");
       await sc.createCircle("Draw", members.map((m) => m.address), C, DAY);
       await expect(sc.drawOrder(0)).to.be.revertedWithCustomError(sc, "WrongStatus");
+      await expect(sc.connect(members[0]).reveal(0, ethers.id("x"))).to.be.revertedWithCustomError(sc, "WrongStatus");
+    });
+
+    it("needs a fresh commit after leaving and rejoining", async function () {
+      const { sc, members } = await setup(2);
+      const [a, b] = members;
+      await sc.createCircle("Draw", [a.address, b.address], C, DAY);
+      await sc.connect(a).join(0, "", ethers.id("old commit"), { value: C });
+      await sc.connect(a).leave(0);
+      await sc.connect(a).join(0, "", commitOf(0, a), { value: C });
+      await sc.connect(b).join(0, "", commitOf(0, b), { value: C });
+      await expect(sc.connect(a).reveal(0, secretOf(0, a))).to.emit(sc, "SecretRevealed");
     });
   });
 
@@ -325,8 +395,8 @@ describe("SavingsCircles", function () {
     it("keeps circles independent", async function () {
       const { sc, members } = await activeCircle(2);
       await sc.createCircle("Second", [members[0].address, members[1].address], C * 2n, DAY);
-      await sc.connect(members[0]).join(1, "", { value: C * 2n });
-      await sc.connect(members[1]).join(1, "", { value: C * 2n });
+      await sc.connect(members[0]).join(1, "", commitOf(1, members[0]), { value: C * 2n });
+      await sc.connect(members[1]).join(1, "", commitOf(1, members[1]), { value: C * 2n });
       await draw(sc, 1);
       await sc.connect(members[0]).contribute(1, { value: C * 2n });
       expect((await sc.getMember(0, members[0].address)).paidThisRound).to.equal(false);

@@ -3,7 +3,7 @@ pragma solidity ^0.8.24;
 
 import {SavingsBadges} from "./SavingsBadges.sol";
 
-/// @title ETN Savings Circles (v4)
+/// @title ETN Savings Circles (v5)
 /// @notice On-chain rotating savings and credit associations (ROSCAs, also known as
 ///         chamas, susus, tontines or stokvels) using native ETN.
 ///
@@ -11,13 +11,17 @@ import {SavingsBadges} from "./SavingsBadges.sol";
 ///  1. A creator sets up a circle with a fixed contribution and round length, either
 ///     - invite-only: a list of member addresses, or
 ///     - open: a number of seats that anyone can fill.
-///  2. Members join by locking a security deposit equal to one contribution, with an
-///     optional nickname. Nobody has a payout slot yet. Before the circle closes a
-///     member can leave and get the deposit back.
-///  3. When the last seat is filled the circle closes and commits to a future block.
-///     Once that block exists, anyone can call drawOrder(): its hash shuffles the
-///     members into payout slots and round 1 starts. Neither the creator nor the order
-///     of joining has any influence on the slots.
+///  2. Members join by locking a security deposit equal to one contribution and
+///     committing to a secret, with an optional nickname. Nobody has a payout slot yet.
+///     Before the circle closes a member can leave and get the deposit back.
+///  3. When the last seat is filled the circle closes and members reveal their secrets
+///     before a deadline. Once everyone has revealed, or the deadline has passed, the
+///     contract commits to a future block. When that block exists, anyone can call
+///     drawOrder(): the members' secrets and the block's hash together shuffle the
+///     members into payout slots, and round 1 starts. Members who didn't reveal are
+///     placed after those who did. Neither the creator nor the order of joining has any
+///     influence, a validator can't predict the result without the secrets, and the
+///     last member to reveal can't work out the result without the future block.
 ///  4. Each round, every member contributes. When everyone has paid (or the round
 ///     deadline passes), anyone can settle the round and the whole pot is credited to
 ///     that round's recipient.
@@ -47,7 +51,10 @@ contract SavingsCircles {
         Status status;
         bool open;          // anyone may join (payout order = join order)
         uint32 minCompleted; // open circles: completed circles required to join (0 = anyone)
-        uint64 drawBlock;   // block whose hash decides the payout order (0 = circle not closed yet)
+        uint64 revealDeadline; // when the reveal phase ends (0 = circle not closed yet)
+        uint64 drawBlock;   // block whose hash goes into the draw (0 = not committed yet)
+        uint32 revealedCount;
+        bytes32 revealSeed; // XOR of the revealed secrets, so reveal order doesn't matter
         string name;
         address[] members;  // payout order once drawn (open circles: joined members only)
     }
@@ -57,7 +64,9 @@ contract SavingsCircles {
         bool joined;
         bool depositUsed;
         uint32 defaults;
+        bool revealed;
         uint32 lastPaidRound; // round index + 1 of the last round paid (0 = never)
+        bytes32 commit;     // keccak256(abi.encode(circle id, member, secret))
         string nickname;
     }
 
@@ -75,7 +84,9 @@ contract SavingsCircles {
     uint256 public constant MAX_NICKNAME_LENGTH = 32;
     uint64 public constant MIN_ROUND_DURATION = 1 minutes;
     uint64 public constant MAX_ROUND_DURATION = 365 days;
-    /// @notice Blocks between closing a circle and the block whose hash draws its payout order.
+    /// @notice How long members have to reveal their secrets once a circle closes.
+    uint64 public constant REVEAL_WINDOW = 1 days;
+    /// @notice Blocks between the end of the reveal phase and the block whose hash goes into the draw.
     uint64 public constant DRAW_DELAY = 5;
 
     uint256 public circleCount;
@@ -97,7 +108,9 @@ contract SavingsCircles {
     event MemberJoined(uint256 indexed id, address indexed member, string nickname);
     event MemberLeft(uint256 indexed id, address indexed member);
     event NicknameSet(uint256 indexed id, address indexed member, string nickname);
-    event CircleClosed(uint256 indexed id, uint64 drawBlock);
+    event CircleClosed(uint256 indexed id, uint64 revealDeadline);
+    event SecretRevealed(uint256 indexed id, address indexed member);
+    event DrawScheduled(uint256 indexed id, uint64 drawBlock);
     event PayoutOrderDrawn(uint256 indexed id, bytes32 seed);
     event CircleStarted(uint256 indexed id, uint64 firstDeadline);
     event Contributed(uint256 indexed id, uint32 indexed round, address indexed member);
@@ -131,6 +144,10 @@ contract SavingsCircles {
     error NotEligible();
     error InvalidRequirement();
     error DrawNotReady();
+    error InvalidCommit();
+    error BadReveal();
+    error RevealClosed();
+    error AlreadyRevealed();
 
     constructor() {
         badges = new SavingsBadges();
@@ -183,13 +200,15 @@ contract SavingsCircles {
     }
 
     /// @notice Join a forming circle by locking a deposit equal to one contribution.
-    function join(uint256 id, string calldata nickname) external payable {
+    /// @param commit keccak256(abi.encode(id, msg.sender, secret)), for a secret revealed once the circle closes.
+    function join(uint256 id, string calldata nickname, bytes32 commit) external payable {
         Circle storage c = _circle(id);
         if (c.status != Status.Forming) revert WrongStatus();
         if (bytes(nickname).length > MAX_NICKNAME_LENGTH) revert NicknameTooLong();
         MemberState storage s = memberStates[id][msg.sender];
         if (s.joined) revert AlreadyJoined();
         if (msg.value != c.contribution) revert WrongAmount();
+        if (commit == bytes32(0)) revert InvalidCommit();
 
         if (c.open) {
             if (!isEligible(id, msg.sender)) revert NotEligible();
@@ -203,40 +222,58 @@ contract SavingsCircles {
 
         s.joined = true;
         s.nickname = nickname;
+        s.commit = commit;
         ++reputations[msg.sender].joined;
         emit MemberJoined(id, msg.sender, nickname);
 
         if (++c.joinedCount == c.size) {
             c.status = Status.Drawing;
-            c.drawBlock = uint64(block.number) + DRAW_DELAY;
-            emit CircleClosed(id, c.drawBlock);
+            c.revealDeadline = uint64(block.timestamp) + REVEAL_WINDOW;
+            emit CircleClosed(id, c.revealDeadline);
         }
     }
 
-    /// @notice Draw the payout order of a closed circle and start round 1. Callable by
-    ///         anyone once the committed block exists. The result depends only on that
-    ///         block's hash, so the caller cannot influence it.
+    /// @notice Reveal the secret committed when joining. The last reveal schedules the draw.
+    function reveal(uint256 id, bytes32 secret) external {
+        Circle storage c = _circle(id);
+        if (c.status != Status.Drawing) revert WrongStatus();
+        if (c.drawBlock != 0 || block.timestamp >= c.revealDeadline) revert RevealClosed();
+        MemberState storage s = memberStates[id][msg.sender];
+        if (!s.joined) revert NotMember();
+        if (s.revealed) revert AlreadyRevealed();
+        if (keccak256(abi.encode(id, msg.sender, secret)) != s.commit) revert BadReveal();
+
+        s.revealed = true;
+        c.revealSeed ^= keccak256(abi.encode(msg.sender, secret));
+        emit SecretRevealed(id, msg.sender);
+        if (++c.revealedCount == c.size) _scheduleDraw(id, c);
+    }
+
+    /// @notice Move a closed circle towards its draw, callable by anyone.
+    ///         After the reveal deadline, the first call commits to a future block if
+    ///         not everyone revealed. Once that block exists, the next call draws the
+    ///         payout order and starts round 1. The result depends only on the revealed
+    ///         secrets and that block's hash, so the caller cannot influence it.
     /// @dev blockhash() only reaches back 256 blocks. If nobody drew in time, this
     ///      commits to a new future block instead, and a later call completes the draw.
     function drawOrder(uint256 id) external {
         Circle storage c = _circle(id);
         if (c.status != Status.Drawing) revert WrongStatus();
+        if (c.drawBlock == 0) {
+            if (block.timestamp < c.revealDeadline) revert DrawNotReady();
+            _scheduleDraw(id, c);
+            return;
+        }
         if (block.number <= c.drawBlock) revert DrawNotReady();
 
         bytes32 hash = blockhash(c.drawBlock);
         if (hash == bytes32(0)) {
-            c.drawBlock = uint64(block.number) + DRAW_DELAY;
-            emit CircleClosed(id, c.drawBlock);
+            _scheduleDraw(id, c);
             return;
         }
 
-        // Fisher-Yates shuffle
-        bytes32 seed = keccak256(abi.encode(hash, id));
-        address[] storage ms = c.members;
-        for (uint256 i = ms.length - 1; i > 0; --i) {
-            uint256 j = uint256(keccak256(abi.encode(seed, i))) % (i + 1);
-            (ms[i], ms[j]) = (ms[j], ms[i]);
-        }
+        bytes32 seed = keccak256(abi.encode(c.revealSeed, hash, id));
+        _assignSlots(id, c, seed);
         emit PayoutOrderDrawn(id, seed);
 
         c.status = Status.Active;
@@ -253,6 +290,7 @@ contract SavingsCircles {
 
         s.joined = false;
         s.nickname = "";
+        s.commit = bytes32(0);
         --c.joinedCount;
         --reputations[msg.sender].joined;
         withdrawable[msg.sender] += c.contribution;
@@ -455,9 +493,17 @@ contract SavingsCircles {
         return (r.joined, r.completed, r.onTimePayments, r.missedPayments, r.defaulted);
     }
 
-    /// @notice The block whose hash draws the payout order. 0 until the circle closes.
-    function drawBlockOf(uint256 id) external view returns (uint64) {
-        return _circle(id).drawBlock;
+    /// @notice Progress of a circle's draw. `revealed` follows the order of getMemberDetails.
+    function getDraw(uint256 id)
+        external
+        view
+        returns (uint64 revealDeadline, uint64 drawBlock, uint32 revealedCount, bool[] memory revealed)
+    {
+        Circle storage c = _circle(id);
+        uint256 n = c.members.length;
+        revealed = new bool[](n);
+        for (uint256 i; i < n; ++i) revealed[i] = memberStates[id][c.members[i]].revealed;
+        return (c.revealDeadline, c.drawBlock, c.revealedCount, revealed);
     }
 
     function nameOf(uint256 id) external view returns (string memory) {
@@ -510,6 +556,36 @@ contract SavingsCircles {
     function _circle(uint256 id) private view returns (Circle storage c) {
         if (id >= circleCount) revert UnknownCircle();
         c = circles[id];
+    }
+
+    function _scheduleDraw(uint256 id, Circle storage c) private {
+        c.drawBlock = uint64(block.number) + DRAW_DELAY;
+        emit DrawScheduled(id, c.drawBlock);
+    }
+
+    /// @dev Members who revealed take the first slots and the others the last ones,
+    ///      each group shuffled, so withholding a secret can only cost a member.
+    function _assignSlots(uint256 id, Circle storage c, bytes32 seed) private {
+        uint256 n = c.members.length;
+        address[] memory order = new address[](n);
+        uint256 front;
+        uint256 back = n;
+        for (uint256 i; i < n; ++i) {
+            address m = c.members[i];
+            if (memberStates[id][m].revealed) order[front++] = m;
+            else order[--back] = m;
+        }
+        _shuffle(order, 0, front, seed);
+        _shuffle(order, front, n, seed);
+        for (uint256 i; i < n; ++i) c.members[i] = order[i];
+    }
+
+    /// @dev Fisher-Yates shuffle of a[from..to).
+    function _shuffle(address[] memory a, uint256 from, uint256 to, bytes32 seed) private pure {
+        for (uint256 i = to; i > from + 1; --i) {
+            uint256 j = from + uint256(keccak256(abi.encode(seed, i))) % (i - from);
+            (a[i - 1], a[j]) = (a[j], a[i - 1]);
+        }
     }
 
     function _dissolve(uint256 id, Circle storage c, address defaulter) private {

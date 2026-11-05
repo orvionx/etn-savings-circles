@@ -4,7 +4,7 @@
 const { expect } = require("chai");
 const { ethers } = require("hardhat");
 const { time } = require("@nomicfoundation/hardhat-network-helpers");
-const { draw, inPayoutOrder } = require("./helpers");
+const { draw, inPayoutOrder, commitOf, secretOf } = require("./helpers");
 const { safeText } = require("../scripts/keeper-lib");
 
 const C = ethers.parseEther("1");
@@ -15,7 +15,7 @@ describe("Security review", function () {
     const signers = (await ethers.getSigners()).slice(0, 5);
     const sc = await ethers.deployContract("SavingsCircles");
     await sc.createCircle("x", signers.map((w) => w.address), C, DAY);
-    for (const w of signers) await sc.connect(w).join(0, "", { value: C });
+    for (const w of signers) await sc.connect(w).join(0, "", commitOf(0, w), { value: C });
     await draw(sc, 0);
     // the draw decides who lands in the first slot; whoever does can still default
     const m = await inPayoutOrder(sc, 0, signers);
@@ -40,8 +40,8 @@ describe("Security review", function () {
     let gas = 0n;
     const g = async (p) => { gas += (await (await p).wait()).gasUsed; };
     await g(sc.createCircle("f", [a.address, b.address], 1n, 60));
-    await g(sc.connect(a).join(0, "", { value: 1n }));
-    await g(sc.connect(b).join(0, "", { value: 1n }));
+    await g(sc.connect(a).join(0, "", commitOf(0, a), { value: 1n }));
+    await g(sc.connect(b).join(0, "", commitOf(0, b), { value: 1n }));
     await draw(sc, 0);
     for (let r = 0; r < 2; r++) {
       await g(sc.connect(a).contribute(0, { value: 1n }));
@@ -49,7 +49,7 @@ describe("Security review", function () {
       await g(sc.settleRound(0));
     }
     expect((await sc.getReputation(a.address)).completed).to.equal(1);
-    expect(gas).to.be.lessThan(1_300_000n); // ≈ 0.0013 ETN at 1 gwei, for both wallets together (draw excluded)
+    expect(gas).to.be.lessThan(1_400_000n); // ≈ 0.0014 ETN at 1 gwei, for both wallets together (draw excluded)
     expect(await sc.isEligible(0, a.address)).to.equal(true);
   });
 
@@ -64,7 +64,8 @@ describe("Security review", function () {
       await f.sendTransaction({ to: w.address, value: ethers.parseEther("1") });
     }
     await sc.createCircle("big", ws.map((w) => w.address), 1n, 60);
-    for (const w of ws) await sc.connect(w).join(0, "", { value: 1n });
+    for (const w of ws) await sc.connect(w).join(0, "", commitOf(0, w), { value: 1n });
+    for (const w of ws) await sc.connect(w).reveal(0, secretOf(0, w));
     await ethers.provider.send("hardhat_mine", ["0x6"]);
     const drawTx = await (await sc.drawOrder(0)).wait();
     expect(drawTx.gasUsed).to.be.lessThan(2_000_000n); // shuffling 50 members
@@ -83,7 +84,7 @@ describe("Security review", function () {
     let firstCount = 0;
     for (let id = 0; id < 30; id++) {
       await sc.connect(creator).createCircle("mine", [creator, x, y, z].map((w) => w.address), C, DAY);
-      for (const w of [creator, x, y, z]) await sc.connect(w).join(id, "", { value: C });
+      for (const w of [creator, x, y, z]) await sc.connect(w).join(id, "", commitOf(id, w), { value: C });
       if ((await draw(sc, id))[0] === creator.address) firstCount++;
     }
     expect(firstCount).to.be.lessThan(20); // about 1 in 4; was always first in v3

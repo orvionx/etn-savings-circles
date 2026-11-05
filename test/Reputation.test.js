@@ -1,7 +1,7 @@
 const { expect } = require("chai");
 const { ethers } = require("hardhat");
 const { time } = require("@nomicfoundation/hardhat-network-helpers");
-const { draw, inPayoutOrder } = require("./helpers");
+const { draw, inPayoutOrder, commitOf } = require("./helpers");
 
 const C = ethers.parseEther("0.1");
 const DAY = 24 * 60 * 60;
@@ -23,7 +23,7 @@ describe("Reputation & badges", function () {
   async function runCircle(sc, members, name = "Chama", skip = []) {
     const id = await sc.circleCount();
     await sc.createCircle(name, members.map((m) => m.address), C, DAY);
-    for (const m of members) await sc.connect(m).join(id, "", { value: C });
+    for (const m of members) await sc.connect(m).join(id, "", commitOf(id, m), { value: C });
     await draw(sc, id);
     for (let r = 0; r < members.length; r++) {
       for (const [i, m] of members.entries()) {
@@ -60,8 +60,8 @@ describe("Reputation & badges", function () {
 
     // new circle: c misses twice -> dissolves, c gets a default
     await sc.createCircle("Second", [a.address, c.address], C, DAY);
-    await sc.connect(a).join(1, "", { value: C });
-    await sc.connect(c).join(1, "", { value: C });
+    await sc.connect(a).join(1, "", commitOf(1, a), { value: C });
+    await sc.connect(c).join(1, "", commitOf(1, c), { value: C });
     await draw(sc, 1);
     await sc.connect(a).contribute(1, { value: C });
     await time.increase(DAY); await sc.settleRound(1);
@@ -78,7 +78,7 @@ describe("Reputation & badges", function () {
     const { sc, signers } = await setup();
     const [, a] = signers;
     await sc.createOpenCircle("Open", 3, C, DAY, 0);
-    await sc.connect(a).join(0, "", { value: C });
+    await sc.connect(a).join(0, "", commitOf(0, a), { value: C });
     expect((await sc.getReputation(a.address)).joined).to.equal(1);
     await sc.connect(a).leave(0);
     expect((await sc.getReputation(a.address)).joined).to.equal(0);
@@ -97,9 +97,9 @@ describe("Reputation & badges", function () {
       expect(await sc.isEligible(1, newbie.address)).to.equal(false);
       expect(await sc.isEligible(1, c.address)).to.equal(true);
 
-      await expect(sc.connect(newbie).join(1, "", { value: C })).to.be.revertedWithCustomError(sc, "NotEligible");
-      await sc.connect(a).join(1, "", { value: C });
-      await sc.connect(c).join(1, "", { value: C });
+      await expect(sc.connect(newbie).join(1, "", commitOf(1, newbie), { value: C })).to.be.revertedWithCustomError(sc, "NotEligible");
+      await sc.connect(a).join(1, "", commitOf(1, a), { value: C });
+      await sc.connect(c).join(1, "", commitOf(1, c), { value: C });
     });
 
     it("excludes members with a default", async function () {
@@ -108,8 +108,8 @@ describe("Reputation & badges", function () {
       await runCircle(sc, [a, b]);
       // b defaults twice in a new circle
       await sc.createCircle("Bad", [a.address, b.address], C, DAY);
-      await sc.connect(a).join(1, "", { value: C });
-      await sc.connect(b).join(1, "", { value: C });
+      await sc.connect(a).join(1, "", commitOf(1, a), { value: C });
+      await sc.connect(b).join(1, "", commitOf(1, b), { value: C });
       await draw(sc, 1);
       await sc.connect(a).contribute(1, { value: C });
       await time.increase(DAY); await sc.settleRound(1);
@@ -117,7 +117,7 @@ describe("Reputation & badges", function () {
       await time.increase(DAY); await sc.settleRound(1);
       await sc.createOpenCircle("Trusted", 2, C, DAY, 1);
       expect(await sc.isEligible(2, b.address)).to.equal(false);
-      await expect(sc.connect(b).join(2, "", { value: C })).to.be.revertedWithCustomError(sc, "NotEligible");
+      await expect(sc.connect(b).join(2, "", commitOf(2, b), { value: C })).to.be.revertedWithCustomError(sc, "NotEligible");
     });
 
     it("never restricts invite-only circles", async function () {
@@ -125,7 +125,7 @@ describe("Reputation & badges", function () {
       const [, a, b] = signers;
       await sc.createCircle("Family", [a.address, b.address], C, DAY);
       expect(await sc.requirementOf(0)).to.equal(0);
-      await sc.connect(a).join(0, "", { value: C });
+      await sc.connect(a).join(0, "", commitOf(0, a), { value: C });
     });
   });
 
@@ -135,7 +135,7 @@ describe("Reputation & badges", function () {
       const [, a, b, c] = signers;
       const id = await sc.circleCount();
       await sc.createCircle("Chama", [a, b, c].map((m) => m.address), C, DAY);
-      for (const m of [a, b, c]) await sc.connect(m).join(id, "", { value: C });
+      for (const m of [a, b, c]) await sc.connect(m).join(id, "", commitOf(id, m), { value: C });
       await draw(sc, id);
       const order = await inPayoutOrder(sc, id, [a, b, c]);
       for (let r = 0; r < 2; r++) { for (const m of [a, b, c]) await sc.connect(m).contribute(id, { value: C }); await sc.settleRound(id); }
@@ -191,7 +191,7 @@ describe("Reputation & badges", function () {
         const v = ethers.parseEther(amt);
         const id = await sc.circleCount();
         await sc.createCircle("Amt", [a.address, b.address], v, DAY);
-        await sc.connect(a).join(id, "", { value: v }); await sc.connect(b).join(id, "", { value: v });
+        await sc.connect(a).join(id, "", commitOf(id, a), { value: v }); await sc.connect(b).join(id, "", commitOf(id, b), { value: v });
         await draw(sc, id);
         for (let r = 0; r < 2; r++) { await sc.connect(a).contribute(id, { value: v }); await sc.connect(b).contribute(id, { value: v }); await sc.settleRound(id); }
         const supply = await badges.totalSupply();
