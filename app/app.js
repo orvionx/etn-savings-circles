@@ -6,14 +6,15 @@ const CFG = getConfig();
 const ABI = [
   "function circleCount() view returns (uint256)",
   "function drawOrder(uint256 id)",
-  "function drawBlockOf(uint256 id) view returns (uint64)",
+  "function reveal(uint256 id, bytes32 secret)",
+  "function getDraw(uint256 id) view returns (uint64 revealDeadline, uint64 drawBlock, uint32 revealedCount, bool[] revealed)",
   "function totalPaidOut() view returns (uint256)",
   "function roundsSettled() view returns (uint256)",
   "function circlesCompleted() view returns (uint256)",
   "function withdrawable(address) view returns (uint256)",
   "function createCircle(string name, address[] members, uint128 contribution, uint64 roundDuration) returns (uint256)",
   "function createOpenCircle(string name, uint32 size, uint128 contribution, uint64 roundDuration, uint32 minCompleted) returns (uint256)",
-  "function join(uint256 id, string nickname) payable",
+  "function join(uint256 id, string nickname, bytes32 commit) payable",
   "function leave(uint256 id)",
   "function cancelForming(uint256 id)",
   "function setNickname(uint256 id, string nickname)",
@@ -32,7 +33,9 @@ const ABI = [
   "event MemberJoined(uint256 indexed id, address indexed member, string nickname)",
   "event MemberLeft(uint256 indexed id, address indexed member)",
   "event NicknameSet(uint256 indexed id, address indexed member, string nickname)",
-  "event CircleClosed(uint256 indexed id, uint64 drawBlock)",
+  "event CircleClosed(uint256 indexed id, uint64 revealDeadline)",
+  "event SecretRevealed(uint256 indexed id, address indexed member)",
+  "event DrawScheduled(uint256 indexed id, uint64 drawBlock)",
   "event PayoutOrderDrawn(uint256 indexed id, bytes32 seed)",
   "event CircleStarted(uint256 indexed id, uint64 firstDeadline)",
   "event Contributed(uint256 indexed id, uint32 indexed round, address indexed member)",
@@ -43,7 +46,7 @@ const ABI = [
   "event Withdrawn(address indexed account, uint256 amount)",
   "error InvalidMemberCount()", "error InvalidContribution()", "error InvalidDuration()", "error InvalidName()",
   "error NicknameTooLong()", "error DuplicateMember(address member)", "error ZeroAddressMember()", "error UnknownCircle()",
-  "error WrongStatus()", "error DrawNotReady()", "error NotInvited()", "error NotMember()", "error AlreadyJoined()", "error WrongAmount()",
+  "error WrongStatus()", "error DrawNotReady()", "error InvalidCommit()", "error BadReveal()", "error RevealClosed()", "error AlreadyRevealed()", "error NotInvited()", "error NotMember()", "error AlreadyJoined()", "error WrongAmount()",
   "error NotCreator()", "error AlreadyPaid()", "error RoundClosed()", "error RoundStillOpen()",
   "error NothingToWithdraw()", "error TransferFailed()", "error Reentrancy()", "error NotEligible()", "error InvalidRequirement()",
 ];
@@ -57,7 +60,10 @@ const ERROR_TEXT = {
   ZeroAddressMember: "One of the addresses is the zero address.",
   UnknownCircle: "That circle doesn't exist.",
   WrongStatus: "The circle has moved on. Refresh and try again.",
-  DrawNotReady: "The draw block hasn't been reached yet. Try again in a few seconds.",
+  DrawNotReady: "The draw isn't ready yet. Try again in a few seconds.",
+  BadReveal: "This secret doesn't match the one you joined with. Try the browser or wallet you joined from.",
+  RevealClosed: "The reveal phase has ended.",
+  AlreadyRevealed: "You've already revealed.",
   NotInvited: "Your wallet isn't on this circle's member list.",
   NotMember: "Your wallet isn't a member of this circle.",
   AlreadyJoined: "You've already joined this circle.",
@@ -239,6 +245,32 @@ function closeModal() { $("#modal-root").innerHTML = ""; document.removeEventLis
 // Rough upper bound for one transaction's network fee on ETN (about 300k gas).
 const FEE_MARGIN = ethers.parseEther("0.005");
 /** Returns true if the wallet can pay `value` plus fees; otherwise explains and returns false. */
+// A member's secret for a circle's draw comes from one free wallet signature, so there's
+// nothing to write down and it can be recreated on another device. A copy is kept in this
+// browser for wallets whose signatures aren't repeatable.
+const DRAW_MESSAGE = "ETN Savings Circles\n\nSign to create the secret for your circles' payout draws. This is free and doesn't send a transaction.";
+async function drawSecret(id) {
+  if (!state.signer) { await connect(); if (!state.signer) return null; }
+  const key = `draw-secret:${CFG.contract}:${id}:${state.account}`.toLowerCase();
+  try { const saved = localStorage.getItem(key); if (saved) return saved; } catch {}
+  try {
+    state.drawBase ||= {};
+    state.drawBase[state.account] ||= ethers.keccak256(await state.signer.signMessage(DRAW_MESSAGE));
+  } catch (e) {
+    console.warn(e);
+    toast("The draw needs that signature. It's free and doesn't send a transaction.", { kind: "error" });
+    return null;
+  }
+  const secret = ethers.solidityPackedKeccak256(["bytes32", "address", "uint256"], [state.drawBase[state.account], CFG.contract, id]);
+  try { localStorage.setItem(key, secret); } catch {}
+  return secret;
+}
+async function drawCommit(id) {
+  const secret = await drawSecret(id);
+  if (!secret) return null;
+  return ethers.keccak256(ethers.AbiCoder.defaultAbiCoder().encode(["uint256", "address", "bytes32"], [id, state.account, secret]));
+}
+
 function haveFunds(value, what) {
   if (!state.account || !state.chainOk) return true; // sendTx connects / switches network first
   const need = value + FEE_MARGIN;
@@ -329,14 +361,15 @@ if (window.ethereum?.on) {
 // ===================================================================== data
 async function loadCircle(id) {
   id = Number(id);
-  const [c, d, req, drawBlock] = await Promise.all([reader.getCircle(id), reader.getMemberDetails(id), reader.requirementOf(id), reader.drawBlockOf(id).catch(() => 0n)]);
+  const [c, d, req, draw] = await Promise.all([reader.getCircle(id), reader.getMemberDetails(id), reader.requirementOf(id), reader.getDraw(id).catch(() => null)]);
   return {
     id, creator: c.creator, name: c.name, contribution: c.contribution, roundDuration: Number(c.roundDuration),
     deadline: Number(c.roundDeadline), round: Number(c.round), size: Number(c.size), joined: Number(c.joinedCount),
-    paid: Number(c.paidCount), status: STATUS[Number(c.status)], open: c.open, minCompleted: Number(req), drawBlock: Number(drawBlock),
+    paid: Number(c.paidCount), status: STATUS[Number(c.status)], open: c.open, minCompleted: Number(req),
+    drawBlock: Number(draw?.drawBlock ?? 0), revealDeadline: Number(draw?.revealDeadline ?? 0), revealedCount: Number(draw?.revealedCount ?? 0),
     members: [...d.addrs].map((a, i) => ({
       address: a, nickname: d.nicknames[i], joined: d.joined[i], paid: d.paidThisRound[i],
-      depositUsed: d.depositUsed[i], defaults: Number(d.defaults[i]),
+      depositUsed: d.depositUsed[i], defaults: Number(d.defaults[i]), revealed: Boolean(draw?.revealed[i]),
     })),
   };
 }
@@ -425,7 +458,7 @@ function ringSVG(c, { mini = false, preview = false } = {}) {
   const pot = c.contribution * BigInt(n);
   let lbl, big, sub;
   if (c.status === "Forming") { lbl = preview ? "Each round's pot" : "Seats filled"; big = preview ? fmtNum(etn(pot)) : `${c.joined}/${n}`; sub = preview ? "ETN" : `Pot ${fmt(pot)}`; }
-  else if (c.status === "Drawing") { lbl = "All seats filled"; big = "🎲"; sub = "Drawing payout order"; }
+  else if (c.status === "Drawing") { lbl = "All seats filled"; big = "🎲"; sub = c.drawBlock ? "Drawing payout order" : `${c.revealedCount}/${n} revealed`; }
   else if (c.status === "Active") { const r = c.members[c.round]; lbl = `Round ${c.round + 1} of ${n}`; big = fmtNum(etn(pot)); sub = `ETN to ${nameOf(r)}`; }
   else if (c.status === "Completed") { lbl = "Completed"; big = "✓"; sub = `${fmt(pot * BigInt(n))} paid out`; }
   else { lbl = "Dissolved"; big = "×"; sub = "Funds refunded"; }
@@ -491,7 +524,7 @@ function circleCard(c) {
   const n = c.size;
   let line;
   if (c.status === "Forming") line = `${n - c.joined} seat${n - c.joined === 1 ? "" : "s"} left`;
-  else if (c.status === "Drawing") line = "Drawing payout order";
+  else if (c.status === "Drawing") line = c.drawBlock ? "Drawing payout order" : `${c.revealedCount}/${n} secrets revealed`;
   else if (c.status === "Active") line = `<span data-deadline="${c.deadline}">${countdown(c.deadline)}</span>`;
   else if (c.status === "Completed") line = "All rounds paid out";
   else line = "Dissolved · refunded";
@@ -554,7 +587,7 @@ async function viewHome() {
     <div class="section-head"><div><h2>How it works</h2><p>Four steps, enforced by a smart contract.</p></div></div>
     <div class="how">
       <div class="card"><div class="n">1</div><b>Create</b><p>Pick an amount, how often you pay, and either open seats or a member list.</p></div>
-      <div class="card"><div class="n">2</div><b>Join</b><p>Each member locks a one-round deposit. It covers one missed payment and comes back at the end. When the last seat fills, the payout order is drawn on-chain, so nobody can pick their slot.</p></div>
+      <div class="card"><div class="n">2</div><b>Join</b><p>Each member locks a one-round deposit. It covers one missed payment and comes back at the end. When the last seat fills, members reveal a secret and the payout order is drawn from all of them plus a future block, so nobody can pick their slot.</p></div>
       <div class="card"><div class="n">3</div><b>Pay each round</b><p>Everyone pays in, and the pot goes to the next member in the drawn order. Everyone gets the pot once, so nobody wins or loses money.</p></div>
       <div class="card"><div class="n">4</div><b>Collect & level up</b><p>Everyone gets the pot once. Finishing earns a badge NFT and raises your savings score.</p></div>
     </div>`;
@@ -588,7 +621,8 @@ async function renderDashboard() {
       if (me && !me.joined) todos.push(`<li><span class="ico pay">✉️</span><div class="grow"><b>You're invited to ${esc(c.name)}</b><span class="small muted">Lock a ${fmt(c.contribution)} deposit to join</span></div><a class="btn small primary" href="#/circle/${c.id}">Review</a></li>`);
       else if (me?.joined) todos.push(`<li><span class="ico">⏳</span><div class="grow"><b>${esc(c.name)}</b><span class="small muted">Waiting for ${c.size - c.joined} more member${c.size - c.joined === 1 ? "" : "s"}</span></div><button class="btn small secondary" data-act="share" data-id="${c.id}">Invite</button></li>`);
     } else if (c.status === "Drawing" && me) {
-      todos.push(`<li><span class="ico">🎲</span><div class="grow"><b>${esc(c.name)} is full</b><span class="small muted">The payout order is being drawn</span></div><a class="btn small secondary" href="#/circle/${c.id}">View</a></li>`);
+      const mustReveal = !c.drawBlock && !me.revealed && now() < c.revealDeadline;
+      todos.push(`<li><span class="ico ${mustReveal ? "pay" : ""}">${mustReveal ? "🔑" : "🎲"}</span><div class="grow"><b>${esc(c.name)} is full</b><span class="small muted">${mustReveal ? `Reveal your secret · <span data-deadline="${c.revealDeadline}">${countdown(c.revealDeadline)}</span>` : "The payout order is being drawn"}</span></div><a class="btn small ${mustReveal ? "primary" : "secondary"}" href="#/circle/${c.id}">${mustReveal ? "Reveal" : "View"}</a></li>`);
     } else if (c.status === "Active" && me) {
       if (isDue(c)) todos.push(`<li><span class="ico settle">⚖️</span><div class="grow"><b>${esc(c.name)}: round ${c.round + 1} is ready</b><span class="small muted">Settle it to release the pot</span></div><button class="btn small primary" data-act="settle" data-id="${c.id}">Settle</button></li>`);
       else if (!me.paid) todos.push(`<li><span class="ico pay">💸</span><div class="grow"><b>Pay ${fmt(c.contribution)} · ${esc(c.name)}</b><span class="small muted">Round ${c.round + 1} · <span data-deadline="${c.deadline}">${countdown(c.deadline)}</span></span></div><button class="btn small primary" data-act="pay" data-id="${c.id}" data-amt="${c.contribution}">Pay</button></li>`);
@@ -769,7 +803,8 @@ function viewCreate() {
     const id = evt ? evt.args.id : null;
     let seatFailed = false;
     if (id !== null && seating) {
-      seatFailed = !(await sendTx("Step 2 of 2 · Take your seat", (c) => c.join(id, f.nickname, { value: amt })));
+      const commit = await drawCommit(id);
+      seatFailed = !commit || !(await sendTx("Step 2 of 2 · Take your seat", (c) => c.join(id, f.nickname, commit, { value: amt })));
     }
     state.tab = "mine";
     location.hash = id !== null ? `#/circle/${id}` : "#/";
@@ -814,12 +849,12 @@ async function viewCircle(id) {
       acts.push(`<a class="btn secondary" href="#/" data-goto-open>Find a circle to start with</a>`);
     } else if (canJoin) {
       head = c.open ? "🪑 A seat is waiting for you" : "✉️ You're invited";
-      body = `Join by locking a <b>${fmt(c.contribution)}</b> deposit. It covers one missed payment and comes back when the circle ends. Payout slots are drawn at random once all seats are filled.
+      body = `Join by locking a <b>${fmt(c.contribution)}</b> deposit. It covers one missed payment and comes back when the circle ends. Payout slots are drawn at random once all seats are filled. Your wallet will also ask for a free signature, which creates your secret for the draw.
         <div style="margin-top:12px"><label for="j-nick">Nickname <span class="hint">(optional)</span></label><input id="j-nick" maxlength="32" placeholder="How members will see you"></div>`;
       acts.push(`<button class="btn primary large" data-act="join" data-id="${id}" data-amt="${c.contribution}">Join · lock ${fmt(c.contribution)}</button>`);
     } else if (me?.joined) {
       head = "⏳ Waiting for members";
-      body = `You're in. When all ${n} seats are filled, the payout order is drawn at random and round 1 begins. ${n - c.joined} to go. Share the link to fill it faster.`;
+      body = `You're in. When all ${n} seats are filled, you'll have a day to reveal your secret. Then the payout order is drawn at random and round 1 begins. ${n - c.joined} to go. Share the link to fill it faster.`;
       acts.push(`<button class="btn primary" data-act="share" data-id="${id}">Invite members</button>`);
       acts.push(`<button class="btn danger" data-act="leave" data-id="${id}">Leave & get deposit back</button>`);
     } else {
@@ -827,12 +862,25 @@ async function viewCircle(id) {
     }
     if (isCreator) acts.push(`<button class="btn ghost" data-act="cancel" data-id="${id}">Cancel circle</button>`);
   } else if (c.status === "Drawing") {
-    head = "🎲 Drawing the payout order";
-    if (block > c.drawBlock) {
-      body = "All seats are filled, and the block that decides the order now exists. Anyone can run the draw, and the result is the same whoever does it.";
+    const revealOpen = !c.drawBlock && now() < c.revealDeadline;
+    if (revealOpen && me && !me.revealed) {
+      head = "🔑 Reveal your secret";
+      body = `All seats are filled. Reveal your secret to take part in the draw (<span data-deadline="${c.revealDeadline}">${countdown(c.revealDeadline)}</span>). Members who don't reveal in time go to the end of the payout order.`;
+      acts.push(`<button class="btn primary large" data-act="reveal" data-id="${id}">Reveal my secret</button>`);
+    } else if (revealOpen) {
+      head = "🔑 Waiting for reveals";
+      body = `${c.revealedCount} of ${n} members have revealed. The draw follows once everyone has, or when the deadline passes (<span data-deadline="${c.revealDeadline}">${countdown(c.revealDeadline)}</span>).`;
+    } else if (!c.drawBlock) {
+      head = "⌛ Reveal phase ended";
+      body = `${c.revealedCount} of ${n} members revealed. Those who didn't go to the end of the payout order. Anyone can schedule the draw now.`;
+      acts.push(`<button class="btn primary large" data-act="draw" data-id="${id}">Schedule the draw</button>`);
+    } else if (block > c.drawBlock) {
+      head = "🎲 Ready to draw";
+      body = "The block that completes the draw now exists. Anyone can run the draw, and the result is the same whoever does it.";
       acts.push(`<button class="btn primary large" data-act="draw" data-id="${id}">Draw payout order</button>`);
     } else {
-      body = `All seats are filled. The order comes from the hash of block <b>${c.drawBlock}</b>, which doesn't exist yet, so nobody can know or choose the result. About ${Math.max(1, c.drawBlock + 1 - block) * 5} seconds to go.`;
+      head = "🎲 Drawing the payout order";
+      body = `The order comes from the members' secrets and the hash of block <b>${c.drawBlock}</b>, which doesn't exist yet, so nobody can know or choose the result. About ${Math.max(1, c.drawBlock + 1 - block) * 5} seconds to go.`;
       setTimeout(() => { if (location.hash === `#/circle/${id}`) route({ keepScroll: true }); }, 6000);
     }
   } else if (c.status === "Active") {
@@ -845,7 +893,7 @@ async function viewCircle(id) {
   } else if (c.status === "Completed") { head = "🏁 Circle completed"; body = `Every member received the <b>${fmt(pot)}</b> pot once, unused deposits were returned, and every member earned a 🏅 badge NFT.`; if (me) acts.push(`<a class="btn secondary" href="#/u/${state.account}">See my badge</a>`); }
   else { head = "Circle dissolved"; body = "This circle was cancelled or dissolved, and refunds were credited to members."; }
   if (me && state.withdrawable > 0n) acts.push(`<button class="btn secondary" data-act="withdraw">Collect ${fmt(state.withdrawable)}</button>`);
-  if (!state.account && (c.status === "Forming" || c.status === "Active" || (c.status === "Drawing" && acts.length))) acts = [`<button class="btn primary large" data-act="connect">Connect wallet to take part</button>`];
+  if (!state.account && (c.status === "Forming" || c.status === "Active" || acts.some((a) => a.includes('data-act="draw"')))) acts = [`<button class="btn primary large" data-act="connect">Connect wallet to take part</button>`];
 
   // ---- members
   const rows = [];
@@ -856,7 +904,7 @@ async function viewCircle(id) {
     if (!m) { rows.push(`<li>${pos(i)}<span class="av" style="background:var(--surface-3);color:var(--faint)">+</span><div class="who"><b class="faint">Open seat</b></div><span class="state seat">Available</span></li>`); continue; }
     let st;
     if (c.status === "Forming") st = m.joined ? '<span class="state ok">Joined</span>' : '<span class="state no">Invited</span>';
-    else if (c.status === "Drawing") st = '<span class="state ok">Joined</span>';
+    else if (c.status === "Drawing") st = m.revealed ? '<span class="state ok">Revealed ✓</span>' : '<span class="state no">Not revealed</span>';
     else if (c.status === "Active") st = i < c.round ? '<span class="state ok">Got pot ✓</span>' : i === c.round ? `<span class="state turn">${m.paid ? "Paid · " : ""}This round</span>` : m.paid ? '<span class="state ok">Paid ✓</span>' : '<span class="state no">Not paid</span>';
     else st = c.status === "Completed" || i < c.round ? '<span class="state ok">Got pot ✓</span>' : '<span class="state no">—</span>';
     const tags = [];
@@ -948,7 +996,9 @@ async function loadActivity(c) {
         case "MemberJoined": dot = "g"; icon = "+"; text = `<b>${a.nickname ? esc(a.nickname) : who(a.member)}</b> joined and locked a deposit`; break;
         case "MemberLeft": dot = "y"; icon = "−"; text = `<b>${who(a.member)}</b> left — deposit refunded`; break;
         case "NicknameSet": icon = "✎"; text = `${short(a.member)} is now <b>${esc(a.nickname)}</b>`; break;
-        case "CircleClosed": icon = "🔒"; text = `All seats filled — payout order will come from block ${a.drawBlock}`; break;
+        case "CircleClosed": icon = "🔒"; text = `All seats filled — members can now reveal their secrets`; break;
+        case "SecretRevealed": dot = "g"; icon = "🔑"; text = `<b>${who(a.member)}</b> revealed their secret`; break;
+        case "DrawScheduled": icon = "⏱"; text = `Draw will use the hash of block ${a.drawBlock}`; break;
         case "PayoutOrderDrawn": dot = "g"; icon = "🎲"; text = `Payout order drawn at random`; break;
         case "CircleStarted": icon = "▶"; text = `Circle started — round 1 begins`; break;
         case "Contributed": dot = "g"; icon = "✓"; text = `<b>${who(a.member)}</b> paid round ${Number(a.round) + 1}`; break;
@@ -1076,11 +1126,12 @@ document.addEventListener("click", async (ev) => {
       case "switch": await syncWallet(true); break;
       case "reload": state.explore = state.mine = null; await route(); break;
       case "withdraw": await sendTx("Withdraw", (c) => c.withdraw(), { celebrate: true }); break;
-      case "join": { if (!haveFunds(amt, "Joining")) break; const nick = ($("#j-nick")?.value || "").trim(); await sendTx("Join circle", (c) => c.join(id, nick, { value: amt }), { celebrate: true }); break; }
+      case "join": { if (!haveFunds(amt, "Joining")) break; const nick = ($("#j-nick")?.value || "").trim(); const commit = await drawCommit(id); if (!commit) break; await sendTx("Join circle", (c) => c.join(id, nick, commit, { value: amt }), { celebrate: true }); break; }
       case "leave": if (confirm("Leave this circle? Your deposit will be ready to collect.")) await sendTx("Leave circle", (c) => c.leave(id)); break;
       case "pay": if (!haveFunds(amt, "This payment")) break; await sendTx("Pay contribution", (c) => c.contribute(id, { value: amt })); break;
       case "settle": await sendTx("Settle round", (c) => c.settleRound(id), { celebrate: true }); break;
       case "draw": await sendTx("Draw payout order", (c) => c.drawOrder(id), { celebrate: true }); break;
+      case "reveal": { const secret = await drawSecret(id); if (secret) await sendTx("Reveal secret", (c) => c.reveal(id, secret)); break; }
       case "cancel": if (confirm("Cancel this circle? Everyone who joined gets their deposit back.")) await sendTx("Cancel circle", (c) => c.cancelForming(id)); break;
       case "nick": { const v = prompt("Your nickname in this circle (max 32 characters):", meIn(state.current)?.nickname || ""); if (v !== null) await sendTx("Update nickname", (c) => c.setNickname(id, v.trim().slice(0, 32))); break; }
       case "share": await share(Number(id)); break;

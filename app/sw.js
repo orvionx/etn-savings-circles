@@ -1,5 +1,5 @@
 // Network-first service worker: always fresh when online, app shell works offline.
-const CACHE = "circles-v5";
+const CACHE = "circles-v6";
 const SHELL = ["./", "index.html", "styles.css", "app.js", "config.js", "vendor/ethers.min.js", "vendor/qrcode.js", "icons/icon.svg", "manifest.webmanifest"];
 
 self.addEventListener("install", (e) => {

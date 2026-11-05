@@ -147,6 +147,12 @@ async function main() {
   }
   await goCircle(a, 0);
   check((await text(a, ".pill")).includes("Drawing"), "circle closes for the draw once all 3 seats are filled");
+  check(/Reveal your secret/.test(await text(a, ".action-card")), "members are asked to reveal");
+  for (const [p, nick] of [[a, "Amina"], [b, "Kofi"], [c, "Njeri"]]) {
+    await goCircle(p, 0);
+    await act(p, '.action-card [data-act="reveal"]', `${nick} reveals`);
+  }
+  await goCircle(a, 0);
   check(/doesn't exist yet/.test(await text(a, ".action-card")), "explains the draw block isn't mined yet");
   check(!(await a.$('.action-card [data-act="draw"]')), "no draw button before the committed block");
   await provider.send("hardhat_mine", ["0x6"]);
@@ -177,7 +183,7 @@ async function main() {
   if (await a.$("#more-activity")) await a.click("#more-activity");
   const activity = await text(a, "#activity");
   check(/Amina joined/.test(activity) && new RegExp(`Round 3: 4\\.5 ETN sent to ${orderNames[2]}`).test(activity), "activity timeline shows joins and payouts");
-  check(/Payout order drawn at random/.test(activity), "activity timeline shows the draw");
+  check(/Amina revealed their secret/.test(activity) && /Payout order drawn at random/.test(activity), "activity timeline shows the reveals and the draw");
   await a.screenshot({ path: path.join(OUT, "3b-circle-completed.png"), fullPage: true });
 
   console.log("Reputation + badges");
